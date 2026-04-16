@@ -592,10 +592,23 @@ function refreshHealthBar(enemy) {
 
 // ─── Enemies ──────────────────────────────────────────────────────────────────
 const ENEMY_BASE_STATS = [
-  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200 }, // Original Type 0
-  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600 }, // Original Type 1
-  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff }, // Original Type 2
-  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077 }, // Original Type 3
+  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200 }, // Original Type 0 (Red)
+  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600 }, // Original Type 1 (Orange)
+  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff }, // Original Type 2 (Purple)
+  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077 }, // Original Type 3 (Pink)
+  { speed:4.0, hp:1, size:.6,  score:15, color:0x00ff00 }, // New Type 4 (Green)
+  { speed:2.5, hp:4, size:.9,  score:30, color:0x0000ff }, // New Type 5 (Blue)
+  { speed:3.0, hp:2, size:.7,  score:20, color:0xffff00 }, // New Type 6 (Yellow)
+];
+
+const ENEMY_GEOMETRIES = [
+  (size) => new THREE.OctahedronGeometry(size, 0),
+  (size) => new THREE.BoxGeometry(size * 1.2, size * 1.2, size * 1.2), // Adjust multiplier
+  (size) => new THREE.DodecahedronGeometry(size, 0),
+  (size) => new THREE.TetrahedronGeometry(size, 0),
+  (size) => new THREE.CylinderGeometry(size * 0.8, size * 0.8, size * 1.5, 8),
+  (size) => new THREE.TorusGeometry(size * 0.8, size * 0.3, 8, 16),
+  (size) => new THREE.ConeGeometry(size, size * 1.5, 8),
 ];
 
 const ENEMY_SIZE_TIERS = [
@@ -638,8 +651,9 @@ function spawnEnemy(typeIndex) {
   const group = new THREE.Group();
   group.position.set(sx, terrainHeight(sx, sz) + type.size + randomYOffset, sz);
 
+  const geometryFn = ENEMY_GEOMETRIES[Math.floor(Math.random() * ENEMY_GEOMETRIES.length)];
   const mesh = new THREE.Mesh(
-    new THREE.OctahedronGeometry(type.size, 0),
+    geometryFn(type.size),
     new THREE.MeshStandardMaterial({color:type.color, emissive:type.color, emissiveIntensity:.4, metalness:.3})
   );
   mesh.castShadow=true; group.add(mesh);
