@@ -417,6 +417,189 @@ function playAutoShootSound(worldPos) {
   osc.stop(ctx.currentTime + 0.13);
 }
 
+// ─── Drum Machine ─────────────────────────────────────────────────────────────
+let drumBpm     = 85;
+let drumPlaying = false;
+let drumStep    = 0;
+let drumNextAt  = 0;
+let _drumTimer  = null;
+
+// Patrón house de 16 pasos con variación de kick sincopado
+//                         1 e + a   2 e + a   3 e + a   4 e + a
+const DRUM_KICK = [1,0,0,0, 1,0,0,1, 1,0,0,0, 1,0,1,0]; // kick extra en "a" de 2 y "+" de 4
+const DRUM_CLAP = [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0]; // 2 y 4
+const DRUM_HHC  = [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1]; // 16avos completos
+const DRUM_HHO  = [0,0,0,0, 0,0,1,0, 0,0,0,0, 0,0,1,0]; // abierto off-beat
+// Velocidades del hi-hat: acento en los tiempos fuertes
+const DRUM_HH_VEL = [0.22,0.10,0.14,0.09, 0.20,0.10,0.14,0.09, 0.22,0.10,0.14,0.09, 0.20,0.10,0.14,0.09];
+
+// Swing: 0 = recto, 0.33 = tresillos. ~0.13 = house groove ligero
+const SWING = 0.13;
+
+// ── Canal propio de la batería ─────────────────────────────────────────────────
+// drumBus → drumLpf (distancia) ──→ drumComp ──→ duckGain
+//        ↘ reverbSend → preDelay → drumReverb → reverbReturn → drumComp
+let _drumBus = null;
+
+function ensureDrumChain(ctx) {
+  if (_drumBus) return _drumBus;
+  const { duckGain } = ensureMasterChain(ctx);
+
+  // Compresor de batería — glue suave
+  const drumComp       = ctx.createDynamicsCompressor();
+  drumComp.threshold.value = -22;
+  drumComp.knee.value      = 8;
+  drumComp.ratio.value     = 3.5;
+  drumComp.attack.value    = 0.004;
+  drumComp.release.value   = 0.12;
+  drumComp.connect(duckGain);
+
+  // Reverb propio — sala grande, cola larga (~2.4 s)
+  const rvLen = Math.floor(ctx.sampleRate * 2.4);
+  const rvBuf = ctx.createBuffer(2, rvLen, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = rvBuf.getChannelData(ch);
+    for (let i = 0; i < rvLen; i++)
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / rvLen, 2.2);
+  }
+  const drumReverb = ctx.createConvolver();
+  drumReverb.buffer = rvBuf;
+
+  // Pre-delay 18 ms — separa el directo del reverb (sensación de sala grande)
+  const preDly = ctx.createDelay(0.1);
+  preDly.delayTime.value = 0.018;
+
+  // Retorno del reverb con LPF (ecos más oscuros = más espacio)
+  const rvLpf    = ctx.createBiquadFilter();
+  rvLpf.type     = 'lowpass'; rvLpf.frequency.value = 2800;
+  const rvReturn = ctx.createGain(); rvReturn.gain.value = 0.72;
+  drumReverb.connect(rvLpf); rvLpf.connect(rvReturn); rvReturn.connect(drumComp);
+
+  // Bus de entrada — señal directa con LPF leve para distancia
+  _drumBus       = ctx.createGain(); _drumBus.gain.value = 0.42;
+  const dryLpf   = ctx.createBiquadFilter();
+  dryLpf.type    = 'lowpass'; dryLpf.frequency.value = 7000;
+  const rvSend   = ctx.createGain(); rvSend.gain.value = 0.62;
+
+  _drumBus.connect(dryLpf);  dryLpf.connect(drumComp);
+  _drumBus.connect(rvSend);  rvSend.connect(preDly); preDly.connect(drumReverb);
+
+  return _drumBus;
+}
+
+// Buffers de ruido reutilizables
+let _hhcBuf = null, _hhoBuf = null, _clapBuf = null;
+function getHhcBuf(ctx) {
+  if (_hhcBuf) return _hhcBuf;
+  const len = Math.floor(ctx.sampleRate * 0.025);
+  _hhcBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = _hhcBuf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  return _hhcBuf;
+}
+function getHhoBuf(ctx) {
+  if (_hhoBuf) return _hhoBuf;
+  const len = Math.floor(ctx.sampleRate * 0.20);
+  _hhoBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = _hhoBuf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  return _hhoBuf;
+}
+function getClapBuf(ctx) {
+  if (_clapBuf) return _clapBuf;
+  const len = Math.floor(ctx.sampleRate * 0.12);
+  _clapBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = _clapBuf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  return _clapBuf;
+}
+
+function drumKick(ctx, t) {
+  const bus  = ensureDrumChain(ctx);
+  const osc  = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type   = 'sine';
+  osc.frequency.setValueAtTime(140, t);
+  osc.frequency.exponentialRampToValueAtTime(35, t + 0.45);
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(1.5, t + 0.006);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+  osc.connect(gain); gain.connect(bus);
+  osc.start(t); osc.stop(t + 0.5);
+}
+
+function drumClap(ctx, t) {
+  const bus = ensureDrumChain(ctx);
+  const buf = getClapBuf(ctx);
+  for (const off of [0, 0.011]) {
+    const src  = ctx.createBufferSource(); src.buffer = buf;
+    const bpf  = ctx.createBiquadFilter();
+    bpf.type   = 'bandpass'; bpf.frequency.value = 1500; bpf.Q.value = 0.8;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.55, t + off);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + off + 0.09);
+    src.connect(bpf); bpf.connect(gain); gain.connect(bus);
+    src.start(t + off);
+  }
+}
+
+function drumHhc(ctx, t, vel = 0.16) {
+  const bus  = ensureDrumChain(ctx);
+  const src  = ctx.createBufferSource(); src.buffer = getHhcBuf(ctx);
+  const hpf  = ctx.createBiquadFilter();
+  hpf.type   = 'highpass'; hpf.frequency.value = 8500;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(vel, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.025);
+  src.connect(hpf); hpf.connect(gain); gain.connect(bus);
+  src.start(t);
+}
+
+function drumHho(ctx, t) {
+  const bus  = ensureDrumChain(ctx);
+  const src  = ctx.createBufferSource(); src.buffer = getHhoBuf(ctx);
+  const hpf  = ctx.createBiquadFilter();
+  hpf.type   = 'highpass'; hpf.frequency.value = 7500;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.20, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
+  src.connect(hpf); hpf.connect(gain); gain.connect(bus);
+  src.start(t);
+}
+
+function drumSchedule() {
+  const ctx = Howler.ctx;
+  if (!ctx || !drumPlaying) return;
+  const step16 = 60 / drumBpm / 4;
+  while (drumNextAt < ctx.currentTime + 0.12) {
+    const s = drumStep % 16;
+    if (DRUM_KICK[s]) drumKick(ctx, drumNextAt);
+    if (DRUM_CLAP[s]) drumClap(ctx, drumNextAt);
+    if (DRUM_HHC[s])  drumHhc(ctx, drumNextAt, DRUM_HH_VEL[s]);
+    if (DRUM_HHO[s])  drumHho(ctx, drumNextAt);
+    // Swing: los pasos pares duran más, los impares menos
+    // even→odd: step16*(1+SWING), odd→even: step16*(1-SWING)
+    drumNextAt += (drumStep % 2 === 0)
+      ? step16 * (1 + SWING)
+      : step16 * (1 - SWING);
+    drumStep++;
+  }
+}
+
+function startDrum() {
+  const ctx = Howler.ctx;
+  if (!ctx || drumPlaying) return;
+  drumPlaying = true;
+  drumStep    = 0;
+  drumNextAt  = ctx.currentTime + 0.05;
+  _drumTimer  = setInterval(drumSchedule, 40);
+}
+
+function stopDrum() {
+  drumPlaying = false;
+  if (_drumTimer) { clearInterval(_drumTimer); _drumTimer = null; }
+}
+
 // ─── Game State ───────────────────────────────────────────────────────────────
 let score = 0, wave = 1, coreHealth = 100;
 let gameOver = false, gameStarted = false, shopOpen = false;
@@ -840,6 +1023,7 @@ document.addEventListener('pointerlockchange', () => {
     startScreen.style.display = 'none';
     hud.style.display = 'block';
     if (!gameStarted) { gameStarted = true; waveCooldown = 0.5; updateHUD(); }
+    startDrum();
   } else {
     if (!gameOver && !shopOpen) { startScreen.style.display = 'flex'; hud.style.display = 'none'; }
   }
@@ -1124,6 +1308,7 @@ function spawnEnemy(typeIndex) {
 }
 
 function spawnWave(waveNum) {
+  drumBpm = 84 + waveNum; // ola 1 = 85 BPM, ola 2 = 86, etc.
   const count = 5+waveNum*3;
   const types = Math.min(waveNum, ENEMY_BASE_STATS.length);
   for (let i=0; i<count; i++) {
@@ -1199,7 +1384,7 @@ function updateHUD() {
 }
 
 function triggerGameOver() {
-  gameOver=true; document.exitPointerLock();
+  gameOver=true; document.exitPointerLock(); stopDrum();
   gameOverEl.style.display='flex'; finalScoreEl.textContent=score; finalWaveEl.textContent=wave;
   hud.style.display='none';
 }
@@ -1208,7 +1393,7 @@ function restartGame() {
   for (const e of enemies) scene.remove(e); enemies.length=0; enemyOutline.selectedObjects.length=0;
   for (const b of bullets) scene.remove(b); bullets.length=0;
   for (const p of particles) scene.remove(p.mesh); particles.length=0;
-  score=0; wave=1; coreHealth=100; gameOver=false; killStreak=0; waveEnemiesLeft=0; waveCooldown=0.5;
+  score=0; wave=1; coreHealth=100; gameOver=false; killStreak=0; waveEnemiesLeft=0; waveCooldown=0.5; drumBpm=85;
   for (const t of turretData) { t.base.rotation.y=t.initialYaw; t.pitch.rotation.x=0; t.autoCooldown=0; t.autoBurstLeft=0; }
   turretData[activeTurretIndex].pitch.remove(camera);
   activeTurretIndex=0; turretData[0].pitch.add(camera);
