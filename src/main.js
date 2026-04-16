@@ -670,7 +670,7 @@ function spawnEnemy(typeIndex) {
 
 function spawnWave(waveNum) {
   const count = 5+waveNum*3;
-  const types = Math.min(waveNum, ENEMY_TYPES.length);
+  const types = Math.min(waveNum, ENEMY_BASE_STATS.length);
   for (let i=0; i<count; i++) {
     const t = Math.floor(Math.random()*types);
     setTimeout(()=>spawnEnemy(t), i*300);
