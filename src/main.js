@@ -184,7 +184,7 @@ const BULLET_TYPES = {
 const _bGeo = {}, _bMat = {};
 for (const [k, bt] of Object.entries(BULLET_TYPES)) {
   _bGeo[k] = new THREE.SphereGeometry(.12, 6, 6);
-  _bMat[k] = new THREE.MeshBasicMaterial({ color: bt.color });
+  _bMat[k] = new THREE.MeshStandardMaterial({ color: bt.color, emissive: bt.color, emissiveIntensity: 1.5 });
 }
 
 // ─── Upgrade Definitions ──────────────────────────────────────────────────────
@@ -452,6 +452,7 @@ function spawnBullet(turretIdx, dir, startPos) {
     damage: btype.baseDamage * getDamageMult(t),
     hitEnemies: new Set(),
   };
+
   spawnMuzzleFlash(startPos, btype.color);
   bullets.push(bullet);
   scene.add(bullet);
@@ -590,19 +591,52 @@ function refreshHealthBar(enemy) {
 }
 
 // ─── Enemies ──────────────────────────────────────────────────────────────────
-const ENEMY_TYPES = [
-  { speed:3.5 * 0.8, hp:1, size:.5 * 2,  score:10, color:0xff2200 },
-  { speed:2.0 * 0.8, hp:3, size:.8 * 2,  score:25, color:0xff6600 },
-  { speed:5.0 * 0.8, hp:1, size:.35 * 2, score:20, color:0xcc00ff },
-  { speed:1.2 * 0.8, hp:6, size:1.1 * 2, score:50, color:0xff0077 },
+const ENEMY_BASE_STATS = [
+  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200 }, // Original Type 0
+  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600 }, // Original Type 1
+  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff }, // Original Type 2
+  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077 }, // Original Type 3
 ];
 
+const ENEMY_SIZE_TIERS = [
+    { sizeMult: 1.0, speedMult: 1.0, hpMult: 1.0, rarity: 0.5 }, // Small (50% chance)
+    { sizeMult: 2.0, speedMult: 0.8, hpMult: 2.0, rarity: 0.4 }, // Medium (40% chance)
+    { sizeMult: 4.0, speedMult: 0.6, hpMult: 4.0, rarity: 0.1 }, // Large (10% chance)
+];
+// Helper to pick a tier based on rarity
+function pickEnemyTier() {
+    const rand = Math.random();
+    let cumulativeRarity = 0;
+    for (const tier of ENEMY_SIZE_TIERS) {
+        cumulativeRarity += tier.rarity;
+        if (rand < cumulativeRarity) {
+            return tier;
+        }
+    }
+    return ENEMY_SIZE_TIERS[0]; // Fallback to smallest
+}
+
 function spawnEnemy(typeIndex) {
-  const type = ENEMY_TYPES[typeIndex % ENEMY_TYPES.length];
+  const baseType = ENEMY_BASE_STATS[typeIndex % ENEMY_BASE_STATS.length];
+  const tier = pickEnemyTier(); // Pick a size tier
+
+  const type = { // Create a new type object with applied multipliers
+      speed: baseType.speed * tier.speedMult * (1 - 0.2), // Apply overall 20% slow
+      hp: baseType.hp * tier.hpMult,
+      size: baseType.size * tier.sizeMult,
+      score: baseType.score * tier.hpMult, // Scale score with HP for larger enemies
+      color: baseType.color
+  };
   const angle = Math.random()*Math.PI*2;
+
+  // Randomized spawn proximity
+  const actualSpawnRadius = SPAWN_RADIUS - (Math.random() * SPAWN_RADIUS * 0.5); // Between 50% and 100% of SPAAWN_RADIUS
+  const sx = Math.cos(angle) * actualSpawnRadius, sz = Math.sin(angle) * actualSpawnRadius;
+
+  // Randomized spawn height
+  const randomYOffset = Math.random() * 10 - 5; // Random offset between -5 and 5 units
   const group = new THREE.Group();
-  const sx = Math.cos(angle)*SPAWN_RADIUS, sz = Math.sin(angle)*SPAWN_RADIUS;
-  group.position.set(sx, terrainHeight(sx, sz) + type.size, sz);
+  group.position.set(sx, terrainHeight(sx, sz) + type.size + randomYOffset, sz);
 
   const mesh = new THREE.Mesh(
     new THREE.OctahedronGeometry(type.size, 0),
@@ -854,7 +888,7 @@ function animate() {
       p.mesh.position.addScaledVector(p.mesh.velocity,delta);
       p.mesh.velocity.y-=12*delta;
     }
-    if(p.type==='explosion') p.mesh.scale.setScalar(1+(1-r)*4);
+    if(p.type==='explosion') p.mesh.scale.setScalar(1+(1-r)*8);
     if(p.mesh.life<=0){scene.remove(p.mesh);particles.splice(i,1);}
   }
 
