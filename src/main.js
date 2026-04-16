@@ -1,0 +1,874 @@
+import './style.css'
+import * as THREE from 'three'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js'
+import { OutlinePass }    from 'three/addons/postprocessing/OutlinePass.js'
+import { ShaderPass }     from 'three/addons/postprocessing/ShaderPass.js'
+
+// ─── Scene ────────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a0a2e);
+scene.fog = new THREE.Fog(0x1a0a2e, 40, 160);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const clock  = new THREE.Clock();
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// ─── Post Processing ──────────────────────────────────────────────────────────
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const enemyOutline = new OutlinePass(new THREE.Vector2(window.innerWidth, window.innerHeight), scene, camera);
+enemyOutline.edgeStrength = 4; enemyOutline.edgeThickness = 1.5; enemyOutline.edgeGlow = 0.6;
+enemyOutline.visibleEdgeColor.set(0xff3300); enemyOutline.hiddenEdgeColor.set(0x550000);
+composer.addPass(enemyOutline);
+
+const turretOutline = new OutlinePass(new THREE.Vector2(window.innerWidth, window.innerHeight), scene, camera);
+turretOutline.edgeStrength = 3; turretOutline.edgeThickness = 1.2; turretOutline.edgeGlow = 0.4;
+turretOutline.visibleEdgeColor.set(0x00ffcc); turretOutline.hiddenEdgeColor.set(0x004433);
+composer.addPass(turretOutline);
+
+const crtPass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, time: { value: 0 } },
+  vertexShader: `varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;uniform float time;varying vec2 vUv;
+    vec2 barrel(vec2 u){vec2 c=u-.5;return u+c*dot(c,c)*.10;}
+    float noise(vec2 u){return fract(sin(dot(u*300.+time*6.1,vec2(127.1,311.7)))*43758.5453);}
+    void main(){
+      vec2 uv=barrel(vUv);
+      if(uv.x<0.||uv.x>1.||uv.y<0.||uv.y>1.){gl_FragColor=vec4(0,0,0,1);return;}
+      float ca=.002;
+      vec3 col=vec3(texture2D(tDiffuse,uv+vec2(ca,0.)).r,texture2D(tDiffuse,uv).g,texture2D(tDiffuse,uv-vec2(ca,0.)).b);
+      col*=1.-.13*pow(sin(uv.y*480.*3.14159),2.);
+      vec2 v=uv*(1.-uv);col*=pow(v.x*v.y*16.,.30);
+      col+=(noise(uv)-.5)*.030;col*=.972+.028*sin(time*22.);
+      gl_FragColor=vec4(col,1.);}`,
+});
+composer.addPass(crtPass);
+
+// ─── Game State ───────────────────────────────────────────────────────────────
+let score = 0, wave = 1, coreHealth = 100;
+let gameOver = false, gameStarted = false, shopOpen = false;
+let killStreak = 0, lastKillTime = 0;
+let waveEnemiesLeft = 0, waveCooldown = 0;
+const WAVE_COOLDOWN_DURATION = 4;
+const enemies = [], bullets = [], particles = [];
+
+// ─── UI References ────────────────────────────────────────────────────────────
+const hud          = document.getElementById('hud');
+const scoreEl      = document.getElementById('score');
+const waveEl       = document.getElementById('wave');
+const healthFill   = document.getElementById('health-fill');
+const streakEl     = document.getElementById('streak');
+const gameOverEl   = document.getElementById('game-over');
+const finalScoreEl = document.getElementById('final-score');
+const finalWaveEl  = document.getElementById('final-wave');
+const restartBtn   = document.getElementById('restart-btn');
+const startScreen  = document.getElementById('start-screen');
+const startBtn     = document.getElementById('start-btn');
+const waveAnnounce = document.getElementById('wave-announce');
+const hexMapSvg    = document.getElementById('hex-map');
+const turretLabel  = document.getElementById('turret-label');
+const shopEl       = document.getElementById('shop');
+const stateFlash   = document.getElementById('state-flash');
+
+// ─── Lights ───────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x220044, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+dirLight.position.set(5, 20, 10); dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = dirLight.shadow.mapSize.height = 2048;
+scene.add(dirLight);
+const purpleLight = new THREE.PointLight(0x8800ff, 1.5, 30);
+purpleLight.position.set(0, 5, 0); scene.add(purpleLight);
+
+// ─── Terrain Height ───────────────────────────────────────────────────────────
+// Terreno plano en el centro, se eleva progresivamente hacia los bordes.
+// wx, wz = coordenadas mundo. Devuelve altura Y en ese punto.
+function terrainHeight(wx, wz) {
+  const dist = Math.sqrt(wx * wx + wz * wz);
+  const flat = 14, maxH = 28, maxD = 160;
+  if (dist <= flat) return 0;
+  return Math.pow((dist - flat) / (maxD - flat), 1.7) * maxH;
+}
+
+// ─── Environment ──────────────────────────────────────────────────────────────
+// Plano grande con vértices elevados según terrainHeight
+const floorGeo = new THREE.PlaneGeometry(320, 320, 100, 100);
+const fpos = floorGeo.attributes.position;
+for (let i = 0; i < fpos.count; i++) {
+  const lx = fpos.getX(i), ly = fpos.getY(i); // local XY → world XZ después de rotation.x
+  fpos.setZ(i, terrainHeight(lx, ly));          // local Z → world Y (altura)
+}
+fpos.needsUpdate = true;
+floorGeo.computeVertexNormals();
+
+const floor = new THREE.Mesh(
+  floorGeo,
+  new THREE.MeshStandardMaterial({ color: 0x0d0d2b, roughness: 0.9 })
+);
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+
+// Grid solo en zona central plana
+const gridHelper = new THREE.GridHelper(28, 14, 0x330066, 0x220044);
+gridHelper.position.y = .02; scene.add(gridHelper);
+
+// Anillo de spawn en radio 60, elevado según el terreno
+const SPAWN_RADIUS = 120;
+const spawnRingY = terrainHeight(SPAWN_RADIUS, 0) + 0.1;
+const spawnRing = new THREE.Mesh(
+  new THREE.RingGeometry(SPAWN_RADIUS - .5, SPAWN_RADIUS + .5, 64),
+  new THREE.MeshBasicMaterial({ color: 0xff0044, side: THREE.DoubleSide, transparent: true, opacity: .3 })
+);
+spawnRing.rotation.x = -Math.PI / 2; spawnRing.position.y = spawnRingY; scene.add(spawnRing);
+
+const HEX_RADIUS = 13;
+const hexPts = Array.from({ length: 7 }, (_, i) => {
+  const a = (i / 6) * Math.PI * 2 - Math.PI / 6;
+  return new THREE.Vector3(Math.cos(a) * (HEX_RADIUS + .3), .02, Math.sin(a) * (HEX_RADIUS + .3));
+});
+scene.add(new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints(hexPts),
+  new THREE.LineBasicMaterial({ color: 0x4400aa, transparent: true, opacity: .6 })
+));
+
+// ─── Core ─────────────────────────────────────────────────────────────────────
+const coreGroup = new THREE.Group(); coreGroup.position.set(0, 1.2, 0); scene.add(coreGroup);
+const coreMat = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00ccff, emissiveIntensity: 1.0 });
+const coreMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(.8, 1), coreMat);
+coreMesh.castShadow = true; coreGroup.add(coreMesh);
+const glowRing = new THREE.Mesh(
+  new THREE.TorusGeometry(1.2, .08, 8, 32),
+  new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: .6 })
+);
+coreGroup.add(glowRing);
+const coreLight = new THREE.PointLight(0x00ffff, 2, 10); coreGroup.add(coreLight);
+
+// ─── Bullet Types ─────────────────────────────────────────────────────────────
+const BULLET_TYPES = {
+  basic:       { name: 'BÁSICA',      color: 0xffff00, speed: 60, baseDamage: 1, unlockCost:   0, special: null },
+  explosive:   { name: 'EXPLOSIVA',   color: 0xff6600, speed: 45, baseDamage: 2, unlockCost: 150, special: 'aoe',    aoeRadius: 2.5, aoeDamage: 1 },
+  penetrating: { name: 'PENETRANTE',  color: 0x00ccff, speed: 70, baseDamage: 1, unlockCost: 100, special: 'pierce' },
+  slowing:     { name: 'LENTIZANTE',  color: 0x4488ff, speed: 50, baseDamage: 1, unlockCost: 120, special: 'slow',   slowFactor: 0.35, slowTime: 2.5 },
+  burning:     { name: 'QUEMANTE',    color: 0xff4400, speed: 55, baseDamage: 1, unlockCost: 130, special: 'burn',   burnDPS: 0.8,     burnTime: 3.0 },
+};
+
+// Cached geo/mat per bullet type
+const _bGeo = {}, _bMat = {};
+for (const [k, bt] of Object.entries(BULLET_TYPES)) {
+  _bGeo[k] = new THREE.SphereGeometry(.12, 6, 6);
+  _bMat[k] = new THREE.MeshBasicMaterial({ color: bt.color });
+}
+
+// ─── Upgrade Definitions ──────────────────────────────────────────────────────
+const UPGRADE_DEFS = {
+  autoRate: { label: 'Cadencia Auto', costs: [80,  160, 280],  values: [2.5, 1.8, 1.2, 0.8] },
+  damage:   { label: 'Daño',          costs: [100, 200, 350],  values: [1,   1.5, 2,   3  ] },
+  burst:    { label: 'Ráfaga',        costs: [120, 240],       values: [2,   3,   4       ] },
+};
+const getAutoRate  = t => UPGRADE_DEFS.autoRate.values[t.upgrades.autoRate];
+const getDamageMult = t => UPGRADE_DEFS.damage.values[t.upgrades.damage];
+const getBurstSize = t => UPGRADE_DEFS.burst.values[t.upgrades.burst];
+
+// ─── Turret Construction ──────────────────────────────────────────────────────
+const TURRET_COUNT = 6;
+let activeTurretIndex = 0;
+const turretData = [];
+
+function buildTurret(index) {
+  const angle = (index / TURRET_COUNT) * Math.PI * 2 - Math.PI / 6;
+  const x = Math.cos(angle) * HEX_RADIUS;
+  const z = Math.sin(angle) * HEX_RADIUS;
+  const facingYaw = angle + Math.PI;
+
+  const base = new THREE.Group();
+  base.position.set(x, 0, z); base.rotation.y = facingYaw; scene.add(base);
+
+  const baseMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(1, 1.3, .6, 16),
+    new THREE.MeshStandardMaterial({ color: 0x334455, metalness: .7, roughness: .3 })
+  );
+  baseMesh.position.y = .3; baseMesh.castShadow = true; base.add(baseMesh);
+
+  const ringMesh = new THREE.Mesh(
+    new THREE.TorusGeometry(1.1, .06, 8, 32),
+    new THREE.MeshBasicMaterial({ color: 0x00ff44 })
+  );
+  ringMesh.rotation.x = Math.PI / 2; ringMesh.position.y = .5; base.add(ringMesh);
+
+  // Bullet-type color indicator (small sphere above ring)
+  const bulletIndicator = new THREE.Mesh(
+    new THREE.SphereGeometry(.15, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffff00 })
+  );
+  bulletIndicator.position.set(0, 1.0, 0); base.add(bulletIndicator);
+
+  const pitch = new THREE.Group(); pitch.position.y = 1.5; base.add(pitch);
+  const headGroup = new THREE.Group(); pitch.add(headGroup);
+
+  // Head mesh — material único opaco, recibe outline normal
+  const headMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(.9, .7, 1.4),
+    new THREE.MeshStandardMaterial({ color: 0x445566, metalness: .6, roughness: .4 })
+  );
+  headMesh.position.z = -.5; headMesh.castShadow = true; headGroup.add(headMesh);
+
+  // Etiqueta "T1" — plano independiente flotando sobre la cara superior
+  const topCanvas = document.createElement('canvas');
+  topCanvas.width = 256; topCanvas.height = 128;
+  const tc = topCanvas.getContext('2d');
+  tc.clearRect(0, 0, 256, 128);
+  tc.shadowColor = '#00ffcc'; tc.shadowBlur = 18;
+  tc.fillStyle = '#00ffcc';
+  tc.font = 'bold 100px monospace';
+  tc.textAlign = 'center'; tc.textBaseline = 'middle';
+  tc.fillText(`T${index + 1}`, 128, 64);
+  const labelPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(.85, .42),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(topCanvas), transparent: true, depthWrite: false })
+  );
+  labelPlane.position.set(0, .36, -.5);
+  labelPlane.rotation.x = -Math.PI / 2;
+  headGroup.add(labelPlane);
+
+  for (const side of [-.25, .25]) {
+    const b = new THREE.Mesh(
+      new THREE.CylinderGeometry(.1, .1, 2.5, 8),
+      new THREE.MeshStandardMaterial({ color: 0x111122, metalness: .9 })
+    );
+    b.rotation.x = -Math.PI / 2; b.position.set(side, 0, -1.8); b.castShadow = true; headGroup.add(b);
+  }
+
+  const barrelRef = new THREE.Object3D(); barrelRef.position.set(0, 0, -3.2); headGroup.add(barrelRef);
+
+  turretData.push({
+    base, pitch, headGroup, barrelRef, ringMesh, bulletIndicator,
+    initialYaw: facingYaw,
+    // State
+    baseState: 'auto',          // 'auto' | 'inactive' when not controlled
+    equippedBullet: 'basic',
+    unlockedBullets: new Set(['basic']),
+    upgrades: { autoRate: 0, damage: 0, burst: 0 },
+    // Auto-fire runtime
+    autoCooldown: 0,
+    autoBurstLeft: 0,
+    autoBurstTimer: 0,
+  });
+}
+
+for (let i = 0; i < TURRET_COUNT; i++) buildTurret(i);
+
+// Turret outlines (only MeshStandardMaterial meshes)
+turretOutline.selectedObjects = turretData.flatMap(t => {
+  const m = [];
+  t.base.traverse(c => { if (c.isMesh && c.material.type === 'MeshStandardMaterial') m.push(c); });
+  return m;
+});
+
+// Camera on turret 0
+turretData[0].pitch.add(camera);
+camera.position.set(0, 1.1, 2.8);
+updateActiveTurretVisuals();
+
+// ─── Turret Switching & State ─────────────────────────────────────────────────
+function switchToTurret(newIdx) {
+  turretData[activeTurretIndex].pitch.remove(camera);
+  turretData[newIdx].pitch.add(camera);
+  activeTurretIndex = newIdx;
+  updateActiveTurretVisuals();
+  updateHexMap();
+}
+
+function updateActiveTurretVisuals() {
+  for (let i = 0; i < TURRET_COUNT; i++) {
+    const t = turretData[i];
+    const isActive = i === activeTurretIndex;
+    if (isActive)                  t.ringMesh.material.color.set(0x00ffcc);
+    else if (t.baseState==='auto') t.ringMesh.material.color.set(0x00ff44);
+    else                           t.ringMesh.material.color.set(0x333333);
+  }
+  if (turretLabel) turretLabel.textContent = `TORRETA ${activeTurretIndex + 1}`;
+}
+
+function toggleTurretState() {
+  const t = turretData[activeTurretIndex];
+  t.baseState = t.baseState === 'auto' ? 'inactive' : 'auto';
+  updateActiveTurretVisuals();
+  updateHexMap();
+  if (stateFlash) {
+    stateFlash.textContent = t.baseState === 'auto' ? '● AUTO' : '○ INACTIVA';
+    stateFlash.style.color  = t.baseState === 'auto' ? '#00ff44' : '#888888';
+    stateFlash.style.opacity = '1';
+    clearTimeout(stateFlash._t);
+    stateFlash._t = setTimeout(() => stateFlash.style.opacity = '0', 1600);
+  }
+}
+
+// ─── Hex Map ──────────────────────────────────────────────────────────────────
+(function buildHexMapSvg() {
+  const core = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  core.setAttribute('cx','0'); core.setAttribute('cy','0'); core.setAttribute('r','5');
+  core.setAttribute('fill','#00ffff'); core.setAttribute('opacity','.9');
+  hexMapSvg.appendChild(core);
+
+  const pts = Array.from({length:6},(_,i)=>{ const a=(i/6)*Math.PI*2-Math.PI/6; return `${Math.cos(a)*44},${Math.sin(a)*44}`; });
+  const poly = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+  poly.setAttribute('points', pts.join(' ')); poly.setAttribute('fill','none');
+  poly.setAttribute('stroke','rgba(100,50,200,.5)'); poly.setAttribute('stroke-width','1');
+  hexMapSvg.appendChild(poly);
+
+  for (let i=0; i<6; i++) {
+    const a = (i/6)*Math.PI*2-Math.PI/6;
+    const cx = Math.cos(a)*44, cy = Math.sin(a)*44;
+    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+    g.setAttribute('class',`tnode tnode-${i}`);
+    const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    c.setAttribute('cx',cx); c.setAttribute('cy',cy); c.setAttribute('r','7');
+    c.setAttribute('class','tnode-circle'); g.appendChild(c);
+    const tx = document.createElementNS('http://www.w3.org/2000/svg','text');
+    tx.setAttribute('x',cx); tx.setAttribute('y',cy);
+    tx.setAttribute('text-anchor','middle'); tx.setAttribute('dominant-baseline','middle');
+    tx.setAttribute('font-size','7'); tx.setAttribute('font-family','monospace');
+    tx.setAttribute('class','tnode-text'); tx.textContent = i+1; g.appendChild(tx);
+    hexMapSvg.appendChild(g);
+  }
+})();
+
+function updateHexMap() {
+  for (let i=0; i<6; i++) {
+    const isActive = i===activeTurretIndex;
+    const t = turretData[i];
+    const g = hexMapSvg.querySelector(`.tnode-${i}`);
+    let fill = isActive ? '#00ffcc' : t.baseState==='auto' ? 'rgba(0,200,80,.5)' : 'rgba(60,60,60,.5)';
+    g.querySelector('.tnode-circle').setAttribute('fill', fill);
+    g.querySelector('.tnode-circle').setAttribute('stroke', isActive ? '#fff' : '#224433');
+    g.querySelector('.tnode-circle').setAttribute('stroke-width', isActive ? '2' : '1');
+    g.querySelector('.tnode-circle').setAttribute('r', isActive ? '9' : '6');
+    g.querySelector('.tnode-text').setAttribute('fill', isActive ? '#000' : '#aaa');
+  }
+}
+updateHexMap();
+
+// ─── Pointer Lock ─────────────────────────────────────────────────────────────
+let isLocked = false;
+function lockPointer() { renderer.domElement.requestPointerLock(); }
+
+document.addEventListener('pointerlockchange', () => {
+  isLocked = document.pointerLockElement === renderer.domElement;
+  if (isLocked) {
+    startScreen.style.display = 'none';
+    hud.style.display = 'block';
+    if (!gameStarted) { gameStarted = true; waveCooldown = 0.5; updateHUD(); }
+  } else {
+    if (!gameOver && !shopOpen) { startScreen.style.display = 'flex'; hud.style.display = 'none'; }
+  }
+});
+
+startBtn.addEventListener('click', lockPointer);
+restartBtn.addEventListener('click', () => { restartGame(); lockPointer(); });
+
+// ─── Aiming ───────────────────────────────────────────────────────────────────
+const SENSITIVITY = 0.0018;
+const PITCH_UP    =  Math.PI / 9;
+const PITCH_DOWN  = -Math.PI / 5;
+
+document.addEventListener('mousemove', e => {
+  if (!isLocked || !gameStarted || gameOver || shopOpen) return;
+  const t = turretData[activeTurretIndex];
+  t.base.rotation.y  -= e.movementX * SENSITIVITY;
+  t.pitch.rotation.x  = Math.max(PITCH_DOWN, Math.min(PITCH_UP, t.pitch.rotation.x - e.movementY * SENSITIVITY));
+});
+
+document.addEventListener('keydown', e => {
+  if (!gameStarted || gameOver) return;
+  if (shopOpen) { if (e.key==='b'||e.key==='B'||e.key==='Escape') closeShop(); return; }
+  if (e.key==='ArrowLeft'||e.key==='ArrowUp')
+    switchToTurret((activeTurretIndex - 1 + TURRET_COUNT) % TURRET_COUNT);
+  else if (e.key==='ArrowRight'||e.key==='ArrowDown')
+    switchToTurret((activeTurretIndex + 1) % TURRET_COUNT);
+  else if (e.key==='i'||e.key==='I') toggleTurretState();
+  else if (e.key==='b'||e.key==='B') openShop();
+});
+
+// ─── Shooting ─────────────────────────────────────────────────────────────────
+let shootCooldown = 0;
+const SHOOT_RATE = 0.12;
+let isMouseDown = false;
+document.addEventListener('mousedown', e => { if (e.button===0) isMouseDown=true; });
+document.addEventListener('mouseup',   e => { if (e.button===0) isMouseDown=false; });
+
+function spawnBullet(turretIdx, dir, startPos) {
+  const t = turretData[turretIdx];
+  const btype = BULLET_TYPES[t.equippedBullet];
+  const bullet = new THREE.Mesh(_bGeo[t.equippedBullet], _bMat[t.equippedBullet]);
+  bullet.position.copy(startPos);
+  bullet.velocity = dir.clone().multiplyScalar(btype.speed);
+  bullet.lifetime = 2.5;
+  bullet.bdata = {
+    type: t.equippedBullet,
+    damage: btype.baseDamage * getDamageMult(t),
+    hitEnemies: new Set(),
+  };
+  spawnMuzzleFlash(startPos, btype.color);
+  bullets.push(bullet);
+  scene.add(bullet);
+}
+
+function shoot() {
+  if (!isLocked || !gameStarted || gameOver || shopOpen) return;
+  const t = turretData[activeTurretIndex];
+  const pos = new THREE.Vector3(); t.barrelRef.getWorldPosition(pos);
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  spawnBullet(activeTurretIndex, dir, pos);
+}
+
+function autoShoot(turretIdx, enemy) {
+  const t = turretData[turretIdx];
+  const pos = new THREE.Vector3(); t.barrelRef.getWorldPosition(pos);
+  const dir = new THREE.Vector3().subVectors(enemy.position, pos).normalize();
+  dir.x += (Math.random()-.5)*.04; dir.y += (Math.random()-.5)*.04; dir.z += (Math.random()-.5)*.04;
+  dir.normalize();
+  spawnBullet(turretIdx, dir, pos);
+}
+
+// ─── Auto-fire System ─────────────────────────────────────────────────────────
+const AUTO_AIM_SPEED = 3.5;
+
+function updateAutoTurrets(delta) {
+  if (!enemies.length) return;
+  for (let i=0; i<TURRET_COUNT; i++) {
+    if (i===activeTurretIndex) continue;
+    const t = turretData[i];
+    if (t.baseState==='inactive') continue;
+
+    // Find nearest enemy
+    let closest=null, cDist=Infinity;
+    for (const e of enemies) {
+      const d = e.position.distanceTo(t.base.position);
+      if (d<cDist) { cDist=d; closest=e; }
+    }
+    if (!closest) continue;
+
+    // Aim
+    const dx = closest.position.x - t.base.position.x;
+    const dy = closest.position.y - (t.base.position.y + 1.5);
+    const dz = closest.position.z - t.base.position.z;
+    const hd = Math.sqrt(dx*dx+dz*dz);
+    const tYaw   = Math.atan2(-dx, -dz);
+    const tPitch = Math.max(PITCH_DOWN, Math.min(PITCH_UP, Math.atan2(dy, hd)));
+
+    let yawDiff = ((tYaw - t.base.rotation.y + Math.PI) % (Math.PI*2)) - Math.PI;
+    t.base.rotation.y  += yawDiff * AUTO_AIM_SPEED * delta;
+    t.pitch.rotation.x += (tPitch - t.pitch.rotation.x) * AUTO_AIM_SPEED * delta;
+
+    const aligned = Math.abs(yawDiff)<0.12 && Math.abs(tPitch-t.pitch.rotation.x)<0.12;
+
+    if (t.autoBurstLeft > 0) {
+      t.autoBurstTimer -= delta;
+      if (t.autoBurstTimer<=0) { autoShoot(i, closest); t.autoBurstLeft--; t.autoBurstTimer=0.12; }
+    } else {
+      t.autoCooldown -= delta;
+      if (t.autoCooldown<=0 && aligned) {
+        t.autoBurstLeft = getBurstSize(t);
+        t.autoCooldown  = getAutoRate(t);
+      }
+    }
+  }
+}
+
+// ─── Muzzle Flash & Particles ─────────────────────────────────────────────────
+function spawnMuzzleFlash(pos, color=0xffffaa) {
+  const f = new THREE.Mesh(
+    new THREE.SphereGeometry(.25,6,6),
+    new THREE.MeshBasicMaterial({ color, transparent:true, opacity:1 })
+  );
+  f.position.copy(pos); f.life=0.06; f.maxLife=0.06;
+  particles.push({mesh:f,type:'flash'}); scene.add(f);
+}
+
+function spawnHitParticles(pos, color=0xff4400) {
+  for (let i=0; i<8; i++) {
+    const p = new THREE.Mesh(
+      new THREE.SphereGeometry(.07,4,4),
+      new THREE.MeshBasicMaterial({color,transparent:true,opacity:1})
+    );
+    p.position.copy(pos);
+    const sp = 4+Math.random()*6;
+    p.velocity = new THREE.Vector3((Math.random()-.5)*sp, Math.random()*sp, (Math.random()-.5)*sp);
+    p.life=0.5+Math.random()*.3; p.maxLife=p.life;
+    particles.push({mesh:p,type:'hit'}); scene.add(p);
+  }
+}
+
+function spawnExplosion(pos) {
+  // Expanding ring
+  const ring = new THREE.Mesh(
+    new THREE.SphereGeometry(.4, 8, 8),
+    new THREE.MeshBasicMaterial({ color:0xff8800, transparent:true, opacity:.9, wireframe:true })
+  );
+  ring.position.copy(pos); ring.life=0.4; ring.maxLife=0.4;
+  particles.push({mesh:ring, type:'explosion'}); scene.add(ring);
+  // Debris
+  spawnHitParticles(pos, 0xff6600);
+  spawnHitParticles(pos, 0xffaa00);
+}
+
+// ─── Bullet Hit Effects ───────────────────────────────────────────────────────
+function applyBulletHit(bullet, enemy) {
+  const btype = BULLET_TYPES[bullet.bdata.type];
+  enemy.userData.hp -= bullet.bdata.damage;
+  refreshHealthBar(enemy);
+
+  if (btype.special==='slow') {
+    enemy.userData.slowTimer  = btype.slowTime;
+    enemy.userData.slowFactor = btype.slowFactor;
+  }
+  if (btype.special==='burn') {
+    enemy.userData.burnTimer = btype.burnTime;
+    enemy.userData.burnDPS   = btype.burnDPS;
+  }
+  if (btype.special==='aoe') {
+    spawnExplosion(enemy.position.clone());
+    for (const other of enemies) {
+      if (other===enemy) continue;
+      if (other.position.distanceTo(enemy.position) < btype.aoeRadius) {
+        other.userData.hp -= btype.aoeDamage;
+        refreshHealthBar(other);
+      }
+    }
+  }
+  spawnHitParticles(bullet.position.clone(), btype.color);
+}
+
+function refreshHealthBar(enemy) {
+  const r = Math.max(enemy.userData.hp / enemy.userData.maxHp, 0.001);
+  enemy.userData.hbFill.scale.x = r;
+  enemy.userData.hbFill.position.x = -(1-r)*enemy.userData.type.size;
+}
+
+// ─── Enemies ──────────────────────────────────────────────────────────────────
+const ENEMY_TYPES = [
+  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200 },
+  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600 },
+  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff },
+  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077 },
+];
+
+function spawnEnemy(typeIndex) {
+  const type = ENEMY_TYPES[typeIndex % ENEMY_TYPES.length];
+  const angle = Math.random()*Math.PI*2;
+  const group = new THREE.Group();
+  const sx = Math.cos(angle)*SPAWN_RADIUS, sz = Math.sin(angle)*SPAWN_RADIUS;
+  group.position.set(sx, terrainHeight(sx, sz) + type.size, sz);
+
+  const mesh = new THREE.Mesh(
+    new THREE.OctahedronGeometry(type.size, 0),
+    new THREE.MeshStandardMaterial({color:type.color, emissive:type.color, emissiveIntensity:.4, metalness:.3})
+  );
+  mesh.castShadow=true; group.add(mesh);
+
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(type.size*.3,8,8), new THREE.MeshBasicMaterial({color:0xffffff}));
+  eye.position.z = -type.size*.7; group.add(eye);
+
+  const hbBg = new THREE.Mesh(new THREE.PlaneGeometry(type.size*2,.15), new THREE.MeshBasicMaterial({color:0x440000,side:THREE.DoubleSide}));
+  hbBg.position.y = type.size+.3; group.add(hbBg);
+
+  const hbFill = new THREE.Mesh(new THREE.PlaneGeometry(type.size*2,.15), new THREE.MeshBasicMaterial({color:0x00ff44,side:THREE.DoubleSide}));
+  hbFill.position.y = type.size+.3; hbFill.position.z=.01; group.add(hbFill);
+
+  group.userData = {
+    type, mesh, hbFill,
+    hp:type.hp, maxHp:type.hp,
+    speed: type.speed + wave*.15,
+    rotSpeed:(Math.random()-.5)*4,
+    bobOffset:Math.random()*Math.PI*2,
+    slowTimer:0, slowFactor:1,
+    burnTimer:0, burnDPS:0,
+  };
+  scene.add(group);
+  enemies.push(group);
+  enemyOutline.selectedObjects.push(group);
+  waveEnemiesLeft++;
+}
+
+function spawnWave(waveNum) {
+  const count = 5+waveNum*3;
+  const types = Math.min(waveNum, ENEMY_TYPES.length);
+  for (let i=0; i<count; i++) {
+    const t = Math.floor(Math.random()*types);
+    setTimeout(()=>spawnEnemy(t), i*300);
+  }
+  waveAnnounce.textContent = `OLA ${waveNum}`;
+  waveAnnounce.style.opacity='1'; waveAnnounce.style.transform='translate(-50%,-50%) scale(1.2)';
+  setTimeout(()=>{ waveAnnounce.style.opacity='0'; waveAnnounce.style.transform='translate(-50%,-50%) scale(1)'; }, 2000);
+}
+
+// ─── Collision Detection ──────────────────────────────────────────────────────
+function killEnemy(enemy, idx) {
+  spawnHitParticles(enemy.position.clone(), 0xffff00);
+  scene.remove(enemy); enemies.splice(idx, 1);
+  const oi = enemyOutline.selectedObjects.indexOf(enemy);
+  if (oi!==-1) enemyOutline.selectedObjects.splice(oi,1);
+  waveEnemiesLeft--;
+  const now = clock.getElapsedTime();
+  killStreak = now-lastKillTime<1.5 ? killStreak+1 : 1;
+  lastKillTime = now;
+  score += enemy.userData.type.score * (killStreak>2 ? killStreak : 1);
+  updateHUD();
+}
+
+function removeEnemy(enemy, idx) {
+  scene.remove(enemy); enemies.splice(idx,1);
+  const oi = enemyOutline.selectedObjects.indexOf(enemy);
+  if (oi!==-1) enemyOutline.selectedObjects.splice(oi,1);
+  waveEnemiesLeft--;
+}
+
+function checkBulletEnemyCollisions() {
+  for (let bi=bullets.length-1; bi>=0; bi--) {
+    const b = bullets[bi];
+    const isPierce = BULLET_TYPES[b.bdata.type].special==='pierce';
+    let hit = false;
+
+    for (let ei=enemies.length-1; ei>=0; ei--) {
+      const e = enemies[ei];
+      if (isPierce && b.bdata.hitEnemies.has(e)) continue;
+      if (b.position.distanceTo(e.position) < e.userData.type.size*1.5) {
+        if (isPierce) b.bdata.hitEnemies.add(e);
+        applyBulletHit(b, e);
+        if (e.userData.hp<=0) killEnemy(e, ei);
+        if (!isPierce) { scene.remove(b); bullets.splice(bi,1); hit=true; break; }
+      }
+    }
+  }
+}
+
+function checkEnemyCoreCollisions() {
+  for (let ei=enemies.length-1; ei>=0; ei--) {
+    const e = enemies[ei];
+    if (e.position.distanceTo(coreGroup.position)<1.5) {
+      coreHealth -= 10+e.userData.type.hp*5;
+      spawnHitParticles(e.position.clone(), 0x00ffff);
+      removeEnemy(e, ei);
+      if (coreHealth<=0) { coreHealth=0; triggerGameOver(); }
+      updateHUD();
+    }
+  }
+}
+
+// ─── HUD ──────────────────────────────────────────────────────────────────────
+function updateHUD() {
+  scoreEl.textContent = score;
+  waveEl.textContent  = wave;
+  const hp = Math.max(0,coreHealth);
+  healthFill.style.width = hp+'%';
+  healthFill.style.backgroundColor = hp>50 ? '#00ff88' : hp>25 ? '#ffaa00' : '#ff2200';
+  streakEl.style.opacity = killStreak>2 ? '1' : '0';
+  if (killStreak>2) streakEl.textContent = `x${killStreak} STREAK!`;
+}
+
+function triggerGameOver() {
+  gameOver=true; document.exitPointerLock();
+  gameOverEl.style.display='flex'; finalScoreEl.textContent=score; finalWaveEl.textContent=wave;
+  hud.style.display='none';
+}
+
+function restartGame() {
+  for (const e of enemies) scene.remove(e); enemies.length=0; enemyOutline.selectedObjects.length=0;
+  for (const b of bullets) scene.remove(b); bullets.length=0;
+  for (const p of particles) scene.remove(p.mesh); particles.length=0;
+  score=0; wave=1; coreHealth=100; gameOver=false; killStreak=0; waveEnemiesLeft=0; waveCooldown=0.5;
+  for (const t of turretData) { t.base.rotation.y=t.initialYaw; t.pitch.rotation.x=0; t.autoCooldown=0; t.autoBurstLeft=0; }
+  turretData[activeTurretIndex].pitch.remove(camera);
+  activeTurretIndex=0; turretData[0].pitch.add(camera);
+  updateActiveTurretVisuals(); updateHexMap(); updateHUD();
+  gameOverEl.style.display='none'; hud.style.display='block';
+}
+
+// ─── Shop ─────────────────────────────────────────────────────────────────────
+let shopTurretIdx = 0;
+
+function openShop() {
+  if (gameOver) return;
+  shopOpen=true; document.exitPointerLock();
+  shopEl.style.display='flex'; shopTurretIdx=activeTurretIndex; renderShop();
+}
+function closeShop() {
+  shopOpen=false; shopEl.style.display='none';
+  if (gameStarted && !gameOver) lockPointer();
+}
+function bulletHex(key) { return '#'+((BULLET_TYPES[key]?.color??0xffffff)).toString(16).padStart(6,'0'); }
+
+function renderShop() {
+  const t = turretData[shopTurretIdx];
+  shopEl.innerHTML = `
+  <div class="shop-panel">
+    <div class="shop-header">
+      <span class="shop-title">⚙ TIENDA</span>
+      <span class="shop-pts">${score} <em>pts</em></span>
+      <button class="shop-close" onclick="window._closeShop()">✕</button>
+    </div>
+    <div class="shop-body">
+      <div class="shop-turrets">
+        ${turretData.map((td,i)=>`
+          <button class="stt-btn${i===shopTurretIdx?' stt-active':''}" onclick="window._selTurret(${i})">
+            <span class="stt-num">T${i+1}</span>
+            <span class="stt-dot" style="background:${bulletHex(td.equippedBullet)}"></span>
+            <span class="stt-st">${i===activeTurretIndex?'CTRL':td.baseState==='auto'?'AUTO':'INACT'}</span>
+          </button>`).join('')}
+      </div>
+      <div class="shop-right">
+        <div class="shop-sec">TIPO DE BALA — TORRETA ${shopTurretIdx+1}</div>
+        <div class="bullet-grid">
+          ${Object.entries(BULLET_TYPES).map(([k,bt])=>{
+            const owned=t.unlockedBullets.has(k), eq=t.equippedBullet===k;
+            const canBuy=!owned&&score>=bt.unlockCost;
+            return `<button class="bb${eq?' bb-eq':owned?' bb-owned':canBuy?'':' bb-lock'}"
+              onclick="window.${owned?'_equip':'_buy'}(${shopTurretIdx},'${k}')">
+              <span class="bb-dot" style="background:${bulletHex(k)}"></span>
+              <span class="bb-name">${bt.name}</span>
+              <span class="bb-cost">${eq?'ACTIVA':owned?'EQUIPAR':bt.unlockCost===0?'GRATIS':bt.unlockCost+' pts'}</span>
+            </button>`;
+          }).join('')}
+        </div>
+        <div class="shop-sec" style="margin-top:14px">MEJORAS</div>
+        <div class="upg-list">
+          ${Object.entries(UPGRADE_DEFS).map(([k,def])=>{
+            const lvl=t.upgrades[k], max=def.costs.length, atMax=lvl>=max;
+            const cost=atMax?null:def.costs[lvl], canBuy=!atMax&&score>=cost;
+            const pips=Array.from({length:max},(_,i)=>`<span class="pip${i<lvl?' pip-on':''}"></span>`).join('');
+            return `<div class="upg-row">
+              <span class="upg-lbl">${def.label}</span>
+              <div class="upg-pips">${pips}</div>
+              <button class="upg-btn${atMax?' upg-max':canBuy?'':' upg-lock'}"
+                ${(atMax||!canBuy)?'disabled':''} onclick="window._upg(${shopTurretIdx},'${k}')">
+                ${atMax?'MAX':cost+' pts'}
+              </button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Shop actions exposed to inline onclick
+window._closeShop = closeShop;
+window._selTurret = i => { shopTurretIdx=i; renderShop(); };
+window._buy = (ti, key) => {
+  const t=turretData[ti], bt=BULLET_TYPES[key];
+  if (t.unlockedBullets.has(key)||score<bt.unlockCost) return;
+  score-=bt.unlockCost; t.unlockedBullets.add(key);
+  t.equippedBullet=key; t.bulletIndicator.material.color.set(bt.color);
+  updateHUD(); renderShop();
+};
+window._equip = (ti, key) => {
+  const t=turretData[ti];
+  if (!t.unlockedBullets.has(key)) return;
+  t.equippedBullet=key; t.bulletIndicator.material.color.set(BULLET_TYPES[key].color);
+  renderShop();
+};
+window._upg = (ti, key) => {
+  const t=turretData[ti], def=UPGRADE_DEFS[key], lvl=t.upgrades[key];
+  if (lvl>=def.costs.length) return;
+  const cost=def.costs[lvl]; if (score<cost) return;
+  score-=cost; t.upgrades[key]++; updateHUD(); renderShop();
+};
+
+// ─── Animation Loop ───────────────────────────────────────────────────────────
+let elapsed=0;
+const _camWP = new THREE.Vector3();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = Math.min(clock.getDelta(), .05);
+  elapsed += delta;
+  crtPass.uniforms.time.value = elapsed;
+
+  if (!gameStarted || gameOver || shopOpen) { composer.render(); return; }
+
+  // Controlled turret: auto-shoot on hold
+  if (isMouseDown) { shootCooldown-=delta; if(shootCooldown<=0){shoot();shootCooldown=SHOOT_RATE;} }
+
+  // Auto turrets
+  updateAutoTurrets(delta);
+
+  // Bullets
+  for (let i=bullets.length-1; i>=0; i--) {
+    const b=bullets[i];
+    b.position.addScaledVector(b.velocity,delta);
+    b.lifetime-=delta;
+    if(b.lifetime<=0){scene.remove(b);bullets.splice(i,1);}
+  }
+
+  // Particles
+  for (let i=particles.length-1; i>=0; i--) {
+    const p=particles[i];
+    p.mesh.life-=delta;
+    const r=p.mesh.life/p.mesh.maxLife;
+    p.mesh.material.opacity=r;
+    if(p.type==='hit'){
+      p.mesh.position.addScaledVector(p.mesh.velocity,delta);
+      p.mesh.velocity.y-=12*delta;
+    }
+    if(p.type==='explosion') p.mesh.scale.setScalar(1+(1-r)*4);
+    if(p.mesh.life<=0){scene.remove(p.mesh);particles.splice(i,1);}
+  }
+
+  // Enemies
+  camera.getWorldPosition(_camWP);
+  for (let ei=enemies.length-1; ei>=0; ei--) {
+    const e=enemies[ei]; const d=e.userData;
+
+    // Burn DoT
+    if(d.burnTimer>0){
+      d.burnTimer-=delta;
+      d.hp-=d.burnDPS*delta;
+      refreshHealthBar(e);
+      if(d.hp<=0){killEnemy(e,ei);continue;}
+    }
+
+    // Slow decay
+    if(d.slowTimer>0) d.slowTimer-=delta;
+    const speedMult = d.slowTimer>0 ? d.slowFactor : 1;
+
+    const dir=new THREE.Vector3().subVectors(coreGroup.position,e.position).normalize();
+    e.position.addScaledVector(dir, d.speed*speedMult*delta);
+    e.position.y=terrainHeight(e.position.x,e.position.z)+d.type.size+Math.sin(elapsed*3+d.bobOffset)*.15;
+
+    d.mesh.rotation.y+=d.rotSpeed*delta; d.mesh.rotation.x+=d.rotSpeed*.5*delta;
+    e.children[2]?.lookAt(_camWP); e.children[3]?.lookAt(_camWP);
+  }
+
+  // Label billboards for inactive turrets
+
+  checkBulletEnemyCollisions();
+  checkEnemyCoreCollisions();
+
+  // Wave management
+  if(waveEnemiesLeft<=0&&enemies.length===0){
+    waveCooldown-=delta;
+    if(waveCooldown<=0){waveCooldown=WAVE_COOLDOWN_DURATION;spawnWave(wave);wave++;updateHUD();}
+  }
+
+  // Core animation
+  coreMesh.rotation.y+=.012; coreMesh.rotation.z+=.008;
+  glowRing.rotation.z+=.015; glowRing.rotation.x=Math.sin(elapsed)*.3;
+  coreLight.intensity=1.5+Math.sin(elapsed*4)*.5;
+  coreMat.emissiveIntensity=coreHealth>0?(0.8+Math.sin(elapsed*4)*.3)*(coreHealth/100):0;
+  purpleLight.intensity=1.0+Math.sin(elapsed*2)*.5;
+
+  composer.render();
+}
+
+window.addEventListener('resize',()=>{
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+  composer.setSize(window.innerWidth,window.innerHeight);
+});
+
+animate();

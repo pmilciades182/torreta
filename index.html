@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TORRETA</title>
+  </head>
+  <body>
+
+    <!-- Start Screen -->
+    <div id="start-screen" class="screen">
+      <h1>TORRETA</h1>
+      <p>Defiende el núcleo de las hordas enemigas.</p>
+      <div class="stat-block instructions">
+        CLIC — Disparar &nbsp;|&nbsp; RATÓN — Apuntar<br>
+        ← → — Cambiar torreta &nbsp;|&nbsp; I — Auto/Inactiva<br>
+        B — Tienda &nbsp;|&nbsp; ESC — Pausar
+      </div>
+      <button id="start-btn">COMENZAR</button>
+    </div>
+
+    <!-- Game Over -->
+    <div id="game-over" class="screen" style="display:none">
+      <h2>NÚCLEO DESTRUIDO</h2>
+      <div class="stat-block">
+        <div class="stat-line">PUNTUACIÓN</div>
+        <div class="stat-val" id="final-score">0</div>
+        <div class="stat-line" style="margin-top:10px">OLA ALCANZADA</div>
+        <div class="stat-val" id="final-wave">1</div>
+      </div>
+      <button id="restart-btn">REINTENTAR</button>
+    </div>
+
+    <!-- Shop Modal -->
+    <div id="shop" style="display:none"></div>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div id="score-panel">
+        <div class="label">PUNTOS</div>
+        <div id="score">0</div>
+      </div>
+      <div id="wave-panel">
+        <div class="label">OLA</div>
+        <div id="wave">1</div>
+      </div>
+      <div id="health-bar-wrap">
+        <div id="health-label">NÚCLEO</div>
+        <div id="health-bar"><div id="health-fill"></div></div>
+      </div>
+      <div id="streak"></div>
+      <div id="state-flash"></div>
+      <div id="shop-hint">B — TIENDA</div>
+      <div id="hex-map-container">
+        <svg id="hex-map" viewBox="-55 -55 110 110" width="130" height="130"></svg>
+        <div id="turret-label">TORRETA 1</div>
+        <div id="turret-hint">← → CAMBIAR &nbsp;·&nbsp; I MODO</div>
+      </div>
+    </div>
+
+    <div id="wave-announce"></div>
+    <div id="crosshair"></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
