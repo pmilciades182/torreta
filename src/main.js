@@ -4,6 +4,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js'
 import { OutlinePass }    from 'three/addons/postprocessing/OutlinePass.js'
 import { ShaderPass }     from 'three/addons/postprocessing/ShaderPass.js'
+import { Howl, Howler } from 'howler';
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
@@ -50,6 +51,372 @@ const crtPass = new ShaderPass({
 });
 composer.addPass(crtPass);
 
+// ─── Audio ────────────────────────────────────────────────────────────────────
+// Howler inicializa el AudioContext; lo usamos para síntesis procedural
+const _dummyHowl = new Howl({
+  src: ['data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='],
+  volume: 0,
+});
+
+// ── Master chain: duckGain → masterGain → compressor → ctx.destination ────────
+let _masterGain = null, _duckGain = null, _compressor = null;
+
+function ensureMasterChain(ctx) {
+  if (_masterGain) return { masterGain: _masterGain, duckGain: _duckGain };
+
+  _compressor = ctx.createDynamicsCompressor();
+  _compressor.threshold.value = -18;
+  _compressor.knee.value      = 8;
+  _compressor.ratio.value     = 4;
+  _compressor.attack.value    = 0.003;
+  _compressor.release.value   = 0.15;
+  _compressor.connect(ctx.destination);
+
+  _masterGain = ctx.createGain();
+  _masterGain.gain.value = 0.85;
+  _masterGain.connect(_compressor);
+
+  _duckGain = ctx.createGain();
+  _duckGain.gain.value = 1.0;
+  _duckGain.connect(_masterGain);
+
+  // Si el reverb ya fue creado y conectado a ctx.destination, removerlo y reconectarlo
+  if (_reverbNode) { _reverbNode.disconnect(); _reverbNode.connect(_duckGain); }
+
+  return { masterGain: _masterGain, duckGain: _duckGain };
+}
+
+// Duck: baja todos los sonidos distintos al disparo del jugador brevemente
+function triggerDuck(ctx) {
+  const { duckGain } = ensureMasterChain(ctx);
+  const t = ctx.currentTime;
+  duckGain.gain.cancelScheduledValues(t);
+  duckGain.gain.setValueAtTime(duckGain.gain.value, t);
+  duckGain.gain.linearRampToValueAtTime(0.18, t + 0.012); // caída rápida
+  duckGain.gain.linearRampToValueAtTime(1.0,  t + 0.20);  // recuperación suave
+}
+
+// Reverb compartido — conecta a duckGain (parte del bus general)
+let _reverbNode = null;
+function getReverb(ctx) {
+  if (_reverbNode) return _reverbNode;
+  const { duckGain } = ensureMasterChain(ctx);
+  const sampleRate = ctx.sampleRate;
+  const duration   = 1.2;
+  const decay      = 3.5;
+  const len        = Math.floor(sampleRate * duration);
+  const buf        = ctx.createBuffer(2, len, sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++)
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+  }
+  _reverbNode = ctx.createConvolver();
+  _reverbNode.buffer = buf;
+  _reverbNode.connect(duckGain);
+  return _reverbNode;
+}
+
+// Escala de Fa# menor natural (semitonos desde F#)
+const FS_MINOR = [0, 2, 3, 5, 7, 8, 10];
+
+// Devuelve una nota aleatoria de la escala de Fa# menor
+// dentro de ±4 semitonos de la frecuencia base
+function randPitch(base) {
+  const midi       = 69 + 12 * Math.log2(base / 440); // F#4 = MIDI 66
+  const centerOct  = Math.round((midi - 66) / 12);
+  const candidates = [];
+  for (let o = centerOct - 1; o <= centerOct + 1; o++) {
+    for (const s of FS_MINOR) {
+      const m = 66 + o * 12 + s;
+      if (Math.abs(m - midi) <= 4) candidates.push(m);
+    }
+  }
+  const picked = candidates.length
+    ? candidates[Math.floor(Math.random() * candidates.length)]
+    : Math.round(midi); // fallback: redondear al semitono más cercano
+  return 440 * Math.pow(2, (picked - 69) / 12);
+}
+
+// Crea un PannerNode situado en worldPos y actualiza el listener con la cámara
+// refDistance / rolloffFactor son ajustables por tipo de sonido
+function makeSpatialPanner(ctx, worldPos, refDist = 5, rolloff = 1.4) {
+  const listener = ctx.listener;
+  const cp = new THREE.Vector3(); camera.getWorldPosition(cp);
+  const cf = new THREE.Vector3(); camera.getWorldDirection(cf);
+  if (listener.positionX) {
+    listener.positionX.setValueAtTime(cp.x, ctx.currentTime);
+    listener.positionY.setValueAtTime(cp.y, ctx.currentTime);
+    listener.positionZ.setValueAtTime(cp.z, ctx.currentTime);
+    listener.forwardX.setValueAtTime(cf.x, ctx.currentTime);
+    listener.forwardY.setValueAtTime(cf.y, ctx.currentTime);
+    listener.forwardZ.setValueAtTime(cf.z, ctx.currentTime);
+    listener.upX.setValueAtTime(0, ctx.currentTime);
+    listener.upY.setValueAtTime(1, ctx.currentTime);
+    listener.upZ.setValueAtTime(0, ctx.currentTime);
+  } else {
+    listener.setPosition(cp.x, cp.y, cp.z);
+    listener.setOrientation(cf.x, cf.y, cf.z, 0, 1, 0);
+  }
+  const panner = ctx.createPanner();
+  panner.panningModel  = 'HRTF';
+  panner.distanceModel = 'inverse';
+  panner.refDistance   = refDist;
+  panner.maxDistance   = 140;
+  panner.rolloffFactor = rolloff;
+  if (panner.positionX) {
+    panner.positionX.setValueAtTime(worldPos.x, ctx.currentTime);
+    panner.positionY.setValueAtTime(worldPos.y, ctx.currentTime);
+    panner.positionZ.setValueAtTime(worldPos.z, ctx.currentTime);
+  } else {
+    panner.setPosition(worldPos.x, worldPos.y, worldPos.z);
+  }
+  const { duckGain } = ensureMasterChain(ctx);
+  panner.connect(duckGain);
+  return panner;
+}
+
+// Impacto metálico — resonancia inarmónica + click, espacializado
+function playHitSound(worldPos) {
+  const ctx = Howler.ctx;
+  if (!ctx || ctx.state === 'suspended') return;
+  const panner = makeSpatialPanner(ctx, worldPos, 6, 1.8);
+  const reverb = getReverb(ctx);
+  const t      = ctx.currentTime;
+
+  // 3 sines inarmónicos = timbre metálico real (ratios no enteros)
+  const rings = [
+    { f: randPitch(420), g: 0.55, d: 0.28 },
+    { f: randPitch(780), g: 0.35, d: 0.20 },
+    { f: randPitch(1240), g: 0.18, d: 0.13 },
+  ];
+  for (const r of rings) {
+    const osc = ctx.createOscillator();
+    const g   = ctx.createGain();
+    const gW  = ctx.createGain();
+    osc.type  = 'sine';
+    osc.frequency.value = r.f;
+    g.gain.setValueAtTime(r.g, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + r.d);
+    gW.gain.value = 0.084; // −30% reverb
+    osc.connect(g);
+    g.connect(panner);
+    g.connect(gW); gW.connect(reverb);
+    osc.start(t); osc.stop(t + r.d);
+  }
+
+  // Click inicial — transiente breve que activa el "golpe"
+  const cLen  = Math.floor(ctx.sampleRate * 0.018);
+  const cBuf  = ctx.createBuffer(1, cLen, ctx.sampleRate);
+  const cData = cBuf.getChannelData(0);
+  for (let i = 0; i < cLen; i++) cData[i] = (Math.random() * 2 - 1) * (1 - i / cLen);
+  const cSrc  = ctx.createBufferSource();
+  cSrc.buffer = cBuf;
+  const gC    = ctx.createGain();
+  gC.gain.setValueAtTime(0.9, t);
+  gC.gain.exponentialRampToValueAtTime(0.001, t + 0.018);
+  cSrc.connect(gC); gC.connect(panner);
+  cSrc.start(t);
+}
+
+// Explosión — volumen base ×0.6 (−40%), reverb wet ×0.7 (−30%), con delay
+function playExplosionSound(worldPos) {
+  const ctx = Howler.ctx;
+  if (!ctx || ctx.state === 'suspended') return;
+  const panner = makeSpatialPanner(ctx, worldPos, 3, 2.5);
+  const reverb = getReverb(ctx);
+  const { duckGain } = ensureMasterChain(ctx);
+  const t      = ctx.currentTime;
+  const V      = 0.6; // factor de volumen global (−40%)
+  const RV     = 0.7; // factor de reverb (−30%)
+
+  // ── Delay slapback ─────────────────────────────────────────────────────────
+  // Cadena: delay → lpf → feedback → delay (loop)
+  //                     ↘ delayOut → duckGain
+  const delay    = ctx.createDelay(1.0);
+  delay.delayTime.value = 0.19;
+  const dlpf     = ctx.createBiquadFilter();
+  dlpf.type      = 'lowpass'; dlpf.frequency.value = 520; // ecos más oscuros
+  const dfb      = ctx.createGain(); dfb.gain.value = 0.32; // feedback
+  const delayOut = ctx.createGain(); delayOut.gain.value = 0.28; // wet del delay
+  delay.connect(dlpf); dlpf.connect(dfb); dfb.connect(delay); // loop de feedback
+  dlpf.connect(delayOut); delayOut.connect(duckGain);
+
+  // Capa 1: sub-boom — square filtrado, ataque durísimo
+  const sub    = ctx.createOscillator();
+  const gSub   = ctx.createGain();
+  sub.type     = 'square';
+  sub.frequency.setValueAtTime(randPitch(68), t);
+  sub.frequency.exponentialRampToValueAtTime(14, t + 0.9);
+  gSub.gain.setValueAtTime(0, t);
+  gSub.gain.linearRampToValueAtTime(2.56 * V, t + 0.008);
+  gSub.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+  const subLpf = ctx.createBiquadFilter();
+  subLpf.type  = 'lowpass'; subLpf.frequency.value = 220;
+  sub.connect(subLpf); subLpf.connect(gSub); gSub.connect(panner);
+  sub.start(t); sub.stop(t + 0.9);
+
+  // Capa 2: mid-punch — sawtooth medios bajos
+  const mid    = ctx.createOscillator();
+  const gMid   = ctx.createGain();
+  mid.type     = 'sawtooth';
+  mid.frequency.setValueAtTime(randPitch(95), t);
+  mid.frequency.exponentialRampToValueAtTime(18, t + 0.45);
+  gMid.gain.setValueAtTime(1.28 * V, t);
+  gMid.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+  mid.connect(gMid); gMid.connect(panner); gMid.connect(delay);
+  mid.start(t); mid.stop(t + 0.45);
+
+  // Capa 3: noise LPF 900 Hz + reverb + delay
+  const nLen   = Math.floor(ctx.sampleRate * 0.9);
+  const nBuf   = ctx.createBuffer(1, nLen, ctx.sampleRate);
+  const nData  = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nLen, 1.6);
+  const nSrc   = ctx.createBufferSource(); nSrc.buffer = nBuf;
+  const lpf    = ctx.createBiquadFilter();
+  lpf.type     = 'lowpass'; lpf.frequency.value = 900;
+  const gN     = ctx.createGain();
+  gN.gain.setValueAtTime(1.6 * V, t);
+  gN.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+  const gNWet  = ctx.createGain(); gNWet.gain.value = 0.36 * RV;
+  nSrc.connect(lpf); lpf.connect(gN);
+  gN.connect(panner);
+  gN.connect(gNWet);  gNWet.connect(reverb);
+  gN.connect(delay);
+  nSrc.start(t);
+
+  // Capa 4: click de impacto
+  const cLen   = Math.floor(ctx.sampleRate * 0.03);
+  const cBuf   = ctx.createBuffer(1, cLen, ctx.sampleRate);
+  const cData  = cBuf.getChannelData(0);
+  for (let i = 0; i < cLen; i++) cData[i] = (Math.random() * 2 - 1) * (1 - i / cLen);
+  const cSrc   = ctx.createBufferSource(); cSrc.buffer = cBuf;
+  const hpf    = ctx.createBiquadFilter();
+  hpf.type     = 'highpass'; hpf.frequency.value = 800;
+  const gC     = ctx.createGain();
+  gC.gain.setValueAtTime(0.96 * V, t);
+  gC.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+  cSrc.connect(hpf); hpf.connect(gC); gC.connect(panner);
+  cSrc.start(t);
+
+  // Capa 5: bajo melódico Fa# menor
+  const bass   = ctx.createOscillator();
+  const gBass  = ctx.createGain();
+  const bassLpf = ctx.createBiquadFilter();
+  bass.type    = 'sine';
+  bass.frequency.value = randPitch(46);
+  bassLpf.type = 'lowpass'; bassLpf.frequency.value = 180;
+  gBass.gain.setValueAtTime(0, t);
+  gBass.gain.linearRampToValueAtTime(1.8 * V, t + 0.02);
+  gBass.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
+  bass.connect(bassLpf); bassLpf.connect(gBass); gBass.connect(panner);
+  const gBassWet = ctx.createGain(); gBassWet.gain.value = 0.22 * RV;
+  bassLpf.connect(gBassWet); gBassWet.connect(reverb);
+  bass.start(t); bass.stop(t + 1.1);
+
+  // Capa 6: cola de reverb sintética
+  const rLen   = Math.floor(ctx.sampleRate * 0.4);
+  const rBuf   = ctx.createBuffer(1, rLen, ctx.sampleRate);
+  const rData  = rBuf.getChannelData(0);
+  for (let i = 0; i < rLen; i++) rData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / rLen, 2.2);
+  const rSrc   = ctx.createBufferSource(); rSrc.buffer = rBuf;
+  const gR     = ctx.createGain(); gR.gain.value = 0.56 * V * RV;
+  rSrc.connect(gR); gR.connect(reverb);
+  rSrc.start(t);
+}
+
+// Disparo del jugador — sin espacialización, volumen normal
+function playShootSound() {
+  const ctx = Howler.ctx;
+  if (!ctx) return;
+  const fire = () => {
+    const reverb = getReverb(ctx);
+    const t      = ctx.currentTime;
+    const freqHi = randPitch(320);
+    const freqLo = randPitch(38);
+
+    // Bus de mezcla — seco va directo a masterGain (no pasa por duck)
+    const { masterGain } = ensureMasterChain(ctx);
+    triggerDuck(ctx);
+    const dry = ctx.createGain(); dry.connect(masterGain);
+    const wet = ctx.createGain(); wet.connect(reverb);
+    dry.gain.value = 1; wet.gain.value = 0.7; // −30% reverb
+
+    // Capa 1: sawtooth principal — el cuerpo del disparo
+    const osc1 = ctx.createOscillator();
+    const g1   = ctx.createGain();
+    osc1.type  = 'sawtooth';
+    osc1.frequency.setValueAtTime(freqHi, t);
+    osc1.frequency.exponentialRampToValueAtTime(freqLo, t + 0.12);
+    g1.gain.setValueAtTime(0.18, t);
+    g1.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    osc1.connect(g1); g1.connect(dry); g1.connect(wet);
+    osc1.start(t); osc1.stop(t + 0.13);
+
+    // Capa 2: square ligeramente desafinado — añade grosor y armónicos pares
+    const osc2 = ctx.createOscillator();
+    const g2   = ctx.createGain();
+    osc2.type  = 'square';
+    osc2.frequency.setValueAtTime(freqHi * 0.985, t);
+    osc2.frequency.exponentialRampToValueAtTime(freqLo * 0.985, t + 0.10);
+    g2.gain.setValueAtTime(0.06, t);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.10);
+    osc2.connect(g2); g2.connect(dry);
+    osc2.start(t); osc2.stop(t + 0.10);
+
+    // Capa 3: noise burst en el transiente — el "crack" inicial del disparo
+    const nLen  = Math.floor(ctx.sampleRate * 0.028);
+    const nBuf  = ctx.createBuffer(1, nLen, ctx.sampleRate);
+    const nData = nBuf.getChannelData(0);
+    for (let i = 0; i < nLen; i++) nData[i] = (Math.random() * 2 - 1) * (1 - i / nLen);
+    const noise = ctx.createBufferSource();
+    noise.buffer = nBuf;
+    const hpf   = ctx.createBiquadFilter();
+    hpf.type    = 'highpass'; hpf.frequency.value = 1800;
+    const gNoise = ctx.createGain();
+    gNoise.gain.setValueAtTime(0.20, t);
+    gNoise.gain.exponentialRampToValueAtTime(0.001, t + 0.028);
+    noise.connect(hpf); hpf.connect(gNoise); gNoise.connect(dry);
+    noise.start(t);
+
+    // Capa 4: sub-sine brevísimo — punch de baja frecuencia
+    const sub  = ctx.createOscillator();
+    const gSub = ctx.createGain();
+    sub.type   = 'sine';
+    sub.frequency.setValueAtTime(randPitch(60), t);
+    sub.frequency.exponentialRampToValueAtTime(20, t + 0.06);
+    gSub.gain.setValueAtTime(0.28, t);
+    gSub.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    sub.connect(gSub); gSub.connect(dry);
+    sub.start(t); sub.stop(t + 0.06);
+  };
+  ctx.state === 'suspended' ? ctx.resume().then(fire) : fire();
+}
+
+// Disparo automático — 30% más bajo, audio espacial 3D desde la posición de la torreta
+function playAutoShootSound(worldPos) {
+  const ctx = Howler.ctx;
+  if (!ctx || ctx.state === 'suspended') return;
+  const panner  = makeSpatialPanner(ctx, worldPos);
+  const reverb  = getReverb(ctx);
+  const freqHi  = randPitch(320);
+  const freqLo  = randPitch(38);
+  const osc     = ctx.createOscillator();
+  const gainDry = ctx.createGain();
+  const gainWet = ctx.createGain();
+  osc.connect(gainDry); gainDry.connect(panner);
+  osc.connect(gainWet); gainWet.connect(reverb);
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(freqHi, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(freqLo, ctx.currentTime + 0.12);
+  gainDry.gain.setValueAtTime(0.154, ctx.currentTime);
+  gainDry.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.13);
+  gainWet.gain.setValueAtTime(0.029, ctx.currentTime); // −30% reverb
+  gainWet.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.13);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.13);
+}
+
 // ─── Game State ───────────────────────────────────────────────────────────────
 let score = 0, wave = 1, coreHealth = 100;
 let gameOver = false, gameStarted = false, shopOpen = false;
@@ -62,7 +429,6 @@ const enemies = [], bullets = [], particles = [];
 const hud          = document.getElementById('hud');
 const scoreEl      = document.getElementById('score');
 const waveEl       = document.getElementById('wave');
-const healthFill   = document.getElementById('health-fill');
 const streakEl     = document.getElementById('streak');
 const gameOverEl   = document.getElementById('game-over');
 const finalScoreEl = document.getElementById('final-score');
@@ -170,6 +536,78 @@ const glowRing = new THREE.Mesh(
 );
 coreGroup.add(glowRing);
 const coreLight = new THREE.PointLight(0x00ffff, 2, 10); coreGroup.add(coreLight);
+
+// ─── Core Health Label (3D billboard) ─────────────────────────────────────────
+const LABEL_W = 512, LABEL_H = 80;
+const coreLabelCanvas = document.createElement('canvas');
+coreLabelCanvas.width = LABEL_W; coreLabelCanvas.height = LABEL_H;
+const coreLabelCtx = coreLabelCanvas.getContext('2d');
+const coreLabelTex = new THREE.CanvasTexture(coreLabelCanvas);
+
+const coreLabelMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(4.2, 4.2 * (LABEL_H / LABEL_W)),
+  new THREE.MeshBasicMaterial({ map: coreLabelTex, transparent: true, depthWrite: false, side: THREE.DoubleSide })
+);
+// Posición en espacio mundial (no hijo del coreGroup para que no rote con él)
+coreLabelMesh.position.set(0, 3.8, 0);
+scene.add(coreLabelMesh);
+
+function updateCoreLabel() {
+  const hp  = Math.max(0, coreHealth);
+  const pct = hp / 100;
+  const ctx = coreLabelCtx;
+  const W = LABEL_W, H = LABEL_H;
+  const col   = hp > 50 ? '#00ff88' : hp > 25 ? '#ffaa00' : '#ff3300';
+  const colRgb= hp > 50 ? '0,255,136' : hp > 25 ? '255,170,0' : '255,51,0';
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Fondo
+  ctx.fillStyle = 'rgba(4, 0, 18, 0.80)';
+  ctx.beginPath(); ctx.roundRect(0, 0, W, H, 7); ctx.fill();
+
+  // Borde con glow
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+  ctx.shadowColor = col; ctx.shadowBlur = 14;
+  ctx.beginPath(); ctx.roundRect(1, 1, W - 2, H - 2, 7); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Etiqueta "◈ NÚCLEO"
+  ctx.fillStyle = `rgba(${colRgb},0.55)`;
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('◈  NÚCLEO', 14, 21);
+
+  // Porcentaje
+  ctx.fillStyle = col;
+  ctx.shadowColor = col; ctx.shadowBlur = 8;
+  ctx.font = 'bold 14px "Courier New", monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`${Math.round(hp)}%`, W - 14, 21);
+  ctx.shadowBlur = 0;
+
+  // Barra segmentada
+  const SEG = 20, segW = (W - 28) / SEG;
+  const filled = Math.ceil(pct * SEG);
+  for (let i = 0; i < SEG; i++) {
+    const x  = 14 + i * segW + 1;
+    const sw = segW - 2;
+    if (i < filled) {
+      const intensity = i === filled - 1 ? 0.75 : 1;
+      ctx.fillStyle = col;
+      ctx.globalAlpha = intensity;
+      ctx.shadowColor = col; ctx.shadowBlur = i === filled - 1 ? 10 : 4;
+    } else {
+      ctx.fillStyle = `rgba(${colRgb},0.10)`;
+      ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+    }
+    ctx.beginPath(); ctx.roundRect(x, 30, sw, 40, 3); ctx.fill();
+  }
+  ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+
+  coreLabelTex.needsUpdate = true;
+}
+updateCoreLabel();
 
 // ─── Bullet Types ─────────────────────────────────────────────────────────────
 const BULLET_TYPES = {
@@ -464,6 +902,7 @@ function shoot() {
   const pos = new THREE.Vector3(); t.barrelRef.getWorldPosition(pos);
   const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
   spawnBullet(activeTurretIndex, dir, pos);
+  playShootSound();
 }
 
 function autoShoot(turretIdx, enemy) {
@@ -473,6 +912,7 @@ function autoShoot(turretIdx, enemy) {
   dir.x += (Math.random()-.5)*.04; dir.y += (Math.random()-.5)*.04; dir.z += (Math.random()-.5)*.04;
   dir.normalize();
   spawnBullet(turretIdx, dir, pos);
+  playAutoShootSound(pos);
 }
 
 // ─── Auto-fire System ─────────────────────────────────────────────────────────
@@ -582,6 +1022,7 @@ function applyBulletHit(bullet, enemy) {
     }
   }
   spawnHitParticles(bullet.position.clone(), btype.color);
+  playHitSound(enemy.position.clone());
 }
 
 function refreshHealthBar(enemy) {
@@ -696,6 +1137,7 @@ function spawnWave(waveNum) {
 
 // ─── Collision Detection ──────────────────────────────────────────────────────
 function killEnemy(enemy, idx) {
+  playExplosionSound(enemy.position.clone());
   spawnHitParticles(enemy.position.clone(), 0xffff00);
   scene.remove(enemy); enemies.splice(idx, 1);
   const oi = enemyOutline.selectedObjects.indexOf(enemy);
@@ -751,11 +1193,9 @@ function checkEnemyCoreCollisions() {
 function updateHUD() {
   scoreEl.textContent = score;
   waveEl.textContent  = wave;
-  const hp = Math.max(0,coreHealth);
-  healthFill.style.width = hp+'%';
-  healthFill.style.backgroundColor = hp>50 ? '#00ff88' : hp>25 ? '#ffaa00' : '#ff2200';
   streakEl.style.opacity = killStreak>2 ? '1' : '0';
   if (killStreak>2) streakEl.textContent = `x${killStreak} STREAK!`;
+  updateCoreLabel();
 }
 
 function triggerGameOver() {
@@ -955,6 +1395,9 @@ function animate() {
     waveCooldown-=delta;
     if(waveCooldown<=0){waveCooldown=WAVE_COOLDOWN_DURATION;spawnWave(wave);wave++;updateHUD();}
   }
+
+  // Core label billboard — siempre mira a la cámara
+  coreLabelMesh.quaternion.copy(camera.quaternion);
 
   // Core animation
   coreMesh.rotation.y+=.012; coreMesh.rotation.z+=.008;
