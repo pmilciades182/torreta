@@ -125,15 +125,39 @@ const spawnRing = new THREE.Mesh(
 );
 spawnRing.rotation.x = -Math.PI / 2; spawnRing.position.y = spawnRingY; scene.add(spawnRing);
 
-const HEX_RADIUS = 13;
-const hexPts = Array.from({ length: 7 }, (_, i) => {
-  const a = (i / 6) * Math.PI * 2 - Math.PI / 6;
-  return new THREE.Vector3(Math.cos(a) * (HEX_RADIUS + .3), .02, Math.sin(a) * (HEX_RADIUS + .3));
-});
-scene.add(new THREE.Line(
-  new THREE.BufferGeometry().setFromPoints(hexPts),
-  new THREE.LineBasicMaterial({ color: 0x4400aa, transparent: true, opacity: .6 })
-));
+// ─── Starfield Parallax ───────────────────────────────────────────────────────
+const STAR_COUNT = 1000;
+const STARFIELD_RANGE_X = 200;
+const STARFIELD_RANGE_Y = 100;
+const STARFIELD_RANGE_Z = 300;
+const STAR_SPEED_FACTOR = 10;
+let starfield;
+
+function initStarfield() {
+  const starVertices = [];
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const x = (Math.random() - 0.5) * STARFIELD_RANGE_X;
+    const y = (Math.random() - 0.5) * STARFIELD_RANGE_Y;
+    const z = (Math.random() - 0.5) * STARFIELD_RANGE_Z;
+    starVertices.push(x, y, z);
+  }
+
+  const starGeometry = new THREE.BufferGeometry();
+  starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+
+  const starMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.2,
+    map: new THREE.TextureLoader().load('/public/vite.svg'), // Use a simple vite.svg as a placeholder texture
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true,
+    opacity: 0.8
+  });
+
+  starfield = new THREE.Points(starGeometry, starMaterial);
+  scene.add(starfield);
+}
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
 const coreGroup = new THREE.Group(); coreGroup.position.set(0, 1.2, 0); scene.add(coreGroup);
@@ -150,7 +174,7 @@ const coreLight = new THREE.PointLight(0x00ffff, 2, 10); coreGroup.add(coreLight
 // ─── Bullet Types ─────────────────────────────────────────────────────────────
 const BULLET_TYPES = {
   basic:       { name: 'BÁSICA',      color: 0xffff00, speed: 60, baseDamage: 1, unlockCost:   0, special: null },
-  explosive:   { name: 'EXPLOSIVA',   color: 0xff6600, speed: 45, baseDamage: 2, unlockCost: 150, special: 'aoe',    aoeRadius: 2.5, aoeDamage: 1 },
+  explosive: { name: 'EXPLOSIVA', color: 0xff6600, speed: 45, baseDamage: 2, unlockCost: 150, special: 'aoe', aoeRadius: 2.5, aoeDamage: 1 },
   penetrating: { name: 'PENETRANTE',  color: 0x00ccff, speed: 70, baseDamage: 1, unlockCost: 100, special: 'pierce' },
   slowing:     { name: 'LENTIZANTE',  color: 0x4488ff, speed: 50, baseDamage: 1, unlockCost: 120, special: 'slow',   slowFactor: 0.35, slowTime: 2.5 },
   burning:     { name: 'QUEMANTE',    color: 0xff4400, speed: 55, baseDamage: 1, unlockCost: 130, special: 'burn',   burnDPS: 0.8,     burnTime: 3.0 },
@@ -178,11 +202,24 @@ const TURRET_COUNT = 6;
 let activeTurretIndex = 0;
 const turretData = [];
 
+// Define specific positions and orientations for each turret
+const TURRET_POSITIONS = [
+  // Front Group (aiming generally towards negative Z)
+  { x: -8, z: -10, yaw: Math.PI + Math.PI / 8 }, // Left-Front, pointing slightly left-forward
+  { x:  0, z: -10, yaw: Math.PI             }, // Center-Front, pointing straight forward
+  { x:  8, z: -10, yaw: Math.PI - Math.PI / 8 }, // Right-Front, pointing slightly right-forward
+
+  // Back Group (aiming generally towards positive Z)
+  { x: -8, z:  10, yaw: Math.PI / 8     }, // Left-Rear, pointing slightly left-backward
+  { x:  0, z:  10, yaw: 0               }, // Center-Rear, pointing straight backward
+  { x:  8, z:  10, yaw: -Math.PI / 8    }, // Right-Rear, pointing slightly right-backward
+];
+
 function buildTurret(index) {
-  const angle = (index / TURRET_COUNT) * Math.PI * 2 - Math.PI / 6;
-  const x = Math.cos(angle) * HEX_RADIUS;
-  const z = Math.sin(angle) * HEX_RADIUS;
-  const facingYaw = angle + Math.PI;
+  const posData = TURRET_POSITIONS[index];
+  const x = posData.x;
+  const z = posData.z;
+  const facingYaw = posData.yaw;
 
   const base = new THREE.Group();
   base.position.set(x, 0, z); base.rotation.y = facingYaw; scene.add(base);
@@ -308,28 +345,31 @@ function toggleTurretState() {
 }
 
 // ─── Hex Map ──────────────────────────────────────────────────────────────────
+// Define specific positions for each turret on the 2D map
+const TURRET_MAP_POSITIONS = [
+  { cx: -30, cy: -30 }, // Left-Front
+  { cx:   0, cy: -30 }, // Center-Front
+  { cx:  30, cy: -30 }, // Right-Front
+  { cx: -30, cy:  30 }, // Left-Rear
+  { cx:   0, cy:  30 }, // Center-Rear
+  { cx:  30, cy:  30 }, // Right-Rear
+];
+
 (function buildHexMapSvg() {
   const core = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
   core.setAttribute('cx','0'); core.setAttribute('cy','0'); core.setAttribute('r','5');
   core.setAttribute('fill','#00ffff'); core.setAttribute('opacity','.9');
   hexMapSvg.appendChild(core);
 
-  const pts = Array.from({length:6},(_,i)=>{ const a=(i/6)*Math.PI*2-Math.PI/6; return `${Math.cos(a)*44},${Math.sin(a)*44}`; });
-  const poly = document.createElementNS('http://www.w3.org/2000/svg','polygon');
-  poly.setAttribute('points', pts.join(' ')); poly.setAttribute('fill','none');
-  poly.setAttribute('stroke','rgba(100,50,200,.5)'); poly.setAttribute('stroke-width','1');
-  hexMapSvg.appendChild(poly);
-
-  for (let i=0; i<6; i++) {
-    const a = (i/6)*Math.PI*2-Math.PI/6;
-    const cx = Math.cos(a)*44, cy = Math.sin(a)*44;
+  for (let i=0; i<TURRET_COUNT; i++) { // Use TURRET_COUNT instead of fixed 6
+    const pos = TURRET_MAP_POSITIONS[i];
     const g = document.createElementNS('http://www.w3.org/2000/svg','g');
     g.setAttribute('class',`tnode tnode-${i}`);
     const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
-    c.setAttribute('cx',cx); c.setAttribute('cy',cy); c.setAttribute('r','7');
+    c.setAttribute('cx',pos.cx); c.setAttribute('cy',pos.cy); c.setAttribute('r','7');
     c.setAttribute('class','tnode-circle'); g.appendChild(c);
     const tx = document.createElementNS('http://www.w3.org/2000/svg','text');
-    tx.setAttribute('x',cx); tx.setAttribute('y',cy);
+    tx.setAttribute('x',pos.cx); tx.setAttribute('y',pos.cy);
     tx.setAttribute('text-anchor','middle'); tx.setAttribute('dominant-baseline','middle');
     tx.setAttribute('font-size','7'); tx.setAttribute('font-family','monospace');
     tx.setAttribute('class','tnode-text'); tx.textContent = i+1; g.appendChild(tx);
@@ -490,15 +530,15 @@ function spawnMuzzleFlash(pos, color=0xffffaa) {
 }
 
 function spawnHitParticles(pos, color=0xff4400) {
-  for (let i=0; i<8; i++) {
+  for (let i=0; i<30; i++) { // Increased particle count
     const p = new THREE.Mesh(
-      new THREE.SphereGeometry(.07,4,4),
+      new THREE.BoxGeometry(.2, .2, .2), // Changed to BoxGeometry and increased size
       new THREE.MeshBasicMaterial({color,transparent:true,opacity:1})
     );
     p.position.copy(pos);
-    const sp = 4+Math.random()*6;
+    const sp = 8+Math.random()*12; // Increased initial speed
     p.velocity = new THREE.Vector3((Math.random()-.5)*sp, Math.random()*sp, (Math.random()-.5)*sp);
-    p.life=0.5+Math.random()*.3; p.maxLife=p.life;
+    p.life=1.0+Math.random()*.5; p.maxLife=p.life; // Increased lifetime
     particles.push({mesh:p,type:'hit'}); scene.add(p);
   }
 }
@@ -506,10 +546,10 @@ function spawnHitParticles(pos, color=0xff4400) {
 function spawnExplosion(pos) {
   // Expanding ring
   const ring = new THREE.Mesh(
-    new THREE.SphereGeometry(.4, 8, 8),
+    new THREE.SphereGeometry(.8, 8, 8), // Increased size
     new THREE.MeshBasicMaterial({ color:0xff8800, transparent:true, opacity:.9, wireframe:true })
   );
-  ring.position.copy(pos); ring.life=0.4; ring.maxLife=0.4;
+  ring.position.copy(pos); ring.life=0.8; ring.maxLife=0.8; // Increased lifetime
   particles.push({mesh:ring, type:'explosion'}); scene.add(ring);
   // Debris
   spawnHitParticles(pos, 0xff6600);
@@ -551,10 +591,10 @@ function refreshHealthBar(enemy) {
 
 // ─── Enemies ──────────────────────────────────────────────────────────────────
 const ENEMY_TYPES = [
-  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200 },
-  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600 },
-  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff },
-  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077 },
+  { speed:3.5 * 0.8, hp:1, size:.5 * 2,  score:10, color:0xff2200 },
+  { speed:2.0 * 0.8, hp:3, size:.8 * 2,  score:25, color:0xff6600 },
+  { speed:5.0 * 0.8, hp:1, size:.35 * 2, score:20, color:0xcc00ff },
+  { speed:1.2 * 0.8, hp:6, size:1.1 * 2, score:50, color:0xff0077 },
 ];
 
 function spawnEnemy(typeIndex) {
@@ -816,6 +856,20 @@ function animate() {
     }
     if(p.type==='explosion') p.mesh.scale.setScalar(1+(1-r)*4);
     if(p.mesh.life<=0){scene.remove(p.mesh);particles.splice(i,1);}
+  }
+
+  // Starfield Parallax
+  if (starfield) {
+    const positions = starfield.geometry.attributes.position;
+    for (let i = 0; i < STAR_COUNT; i++) {
+      let z = positions.getZ(i);
+      z += STAR_SPEED_FACTOR * delta;
+      if (z > STARFIELD_RANGE_Z / 2) {
+        z = -STARFIELD_RANGE_Z / 2; // Reset to the far end
+      }
+      positions.setZ(i, z);
+    }
+    positions.needsUpdate = true;
   }
 
   // Enemies
