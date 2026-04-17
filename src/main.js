@@ -4,7 +4,9 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js'
 import { OutlinePass }    from 'three/addons/postprocessing/OutlinePass.js'
 import { ShaderPass }     from 'three/addons/postprocessing/ShaderPass.js'
+import { GLTFLoader }     from 'three/addons/loaders/GLTFLoader.js'
 import { Howl, Howler } from 'howler';
+import areosaurUrl from '../models/Areosaur.1.glb?url';
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
@@ -1738,6 +1740,234 @@ function spawnEnemy(typeIndex) {
   waveEnemiesLeft++;
 }
 
+// ─── Areosaur (volador) ───────────────────────────────────────────────────────
+let _areosaurModel = null;
+const _gltfLoader  = new GLTFLoader();
+_gltfLoader.load(areosaurUrl, (gltf) => {
+  _areosaurModel = gltf.scene;
+  // materiales más brillantes/emissive para destacar en el cielo
+  _areosaurModel.traverse(child => {
+    if (child.isMesh) {
+      child.material = child.material.clone();
+      child.material.emissive     = new THREE.Color(0xff4400);
+      child.material.emissiveIntensity = 0.5;
+      child.castShadow = true;
+    }
+  });
+});
+
+// ── Bombas aéreas ─────────────────────────────────────────────────────────────
+const aeroBombs = [];
+const BOMB_GRAVITY   = 1.8;  // caída muy lenta
+const BOMB_AOE_RAD   = 10;
+const BOMB_CORE_DMG  = 12;
+
+function dropBomb(fromPos) {
+  const geo  = new THREE.SphereGeometry(0.55, 8, 6);
+  const mat  = new THREE.MeshStandardMaterial({
+    color: 0x222222, emissive: 0xff3300, emissiveIntensity: 0.8, metalness: 0.7,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(fromPos);
+  mesh.castShadow = true;
+
+  // Aleta trasera visual
+  const finGeo = new THREE.ConeGeometry(0.25, 0.8, 4);
+  const finMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.9 });
+  const fin    = new THREE.Mesh(finGeo, finMat);
+  fin.rotation.x = Math.PI; fin.position.y = -0.65;
+  mesh.add(fin);
+
+  // Luz de advertencia parpadeante
+  const bLight = new THREE.PointLight(0xff4400, 1.5, 8);
+  mesh.add(bLight);
+
+  // Velocidad inicial: leve deriva horizontal hacia el núcleo
+  const toCore = new THREE.Vector3(-fromPos.x, 0, -fromPos.z).normalize();
+  const vel    = toCore.clone().multiplyScalar(3 + Math.random() * 2);
+  vel.y        = 0;  // sin velocidad vertical inicial, solo cae por gravedad
+
+  scene.add(mesh);
+  aeroBombs.push({ mesh, bLight, vel, life: 0 });
+}
+
+function updateAeroBombs(delta) {
+  for (let i = aeroBombs.length - 1; i >= 0; i--) {
+    const b = aeroBombs[i];
+    b.life += delta;
+
+    // Gravedad lenta
+    b.vel.y -= BOMB_GRAVITY * delta;
+    b.mesh.position.addScaledVector(b.vel, delta);
+
+    // Rotación de la bomba en caída
+    b.mesh.rotation.x += delta * 1.5;
+
+    // Parpadeo de la luz de advertencia
+    b.bLight.intensity = 1.0 + Math.sin(b.life * 18) * 0.8;
+
+    const pos       = b.mesh.position;
+    const groundY   = terrainHeight(pos.x, pos.z);
+    const coreDist  = pos.distanceTo(coreGroup.position);
+    const hitGround = pos.y <= groundY + 0.4;
+    const hitCore   = coreDist < BOMB_AOE_RAD * 0.6;
+    const timeout   = b.life > 14;
+
+    if (hitGround || hitCore || timeout) {
+      // Explosión grande
+      spawnExplosion(pos.clone());
+      spawnExplosion(pos.clone().add(new THREE.Vector3((Math.random()-.5)*3, 1, (Math.random()-.5)*3)));
+      playExplosionSound(pos.clone());
+
+      // Daño al núcleo si está en rango
+      if (coreDist < BOMB_AOE_RAD) {
+        coreHealth -= BOMB_CORE_DMG * (1 - coreDist / BOMB_AOE_RAD);
+        spawnHitParticles(coreGroup.position.clone(), 0xff4400);
+        if (coreHealth <= 0) { coreHealth = 0; triggerGameOver(); }
+        updateHUD();
+      }
+
+      // Daño AOE a enemigos terrestres cercanos (fuego amigo de la bomba)
+      for (let ei = enemies.length - 1; ei >= 0; ei--) {
+        const e = enemies[ei];
+        if (e.userData.isFlyer) continue;
+        const d = pos.distanceTo(e.position);
+        if (d < BOMB_AOE_RAD) {
+          e.userData.hp -= 4 * (1 - d / BOMB_AOE_RAD);
+          refreshHealthBar(e);
+          if (e.userData.hp <= 0) killEnemy(e, ei);
+        }
+      }
+
+      scene.remove(b.mesh); b.mesh.geometry.dispose();
+      aeroBombs.splice(i, 1);
+    }
+  }
+}
+
+// ── Spawn Areosaur ────────────────────────────────────────────────────────────
+function spawnAreosaur() {
+  const angle    = Math.random() * Math.PI * 2;
+  const dist     = 280 + Math.random() * 50;   // arranca muy lejos
+  const sx       = Math.cos(angle) * dist;
+  const sz       = Math.sin(angle) * dist;
+  const altitude = 10 + Math.random() * 6;     // mucho más bajo
+
+  // Destino: lado opuesto — el núcleo queda en el medio de la trayectoria
+  const tx     = -sx;
+  const tz     = -sz;
+  const flyDir = new THREE.Vector3(tx - sx, 0, tz - sz).normalize();
+
+  const hp    = 10 + wave * 2;
+  const speed = (18 + wave * 0.5) * 0.7;
+  const size  = 3.5;
+
+  const group = new THREE.Group();
+  group.position.set(sx, altitude, sz);
+  group.rotation.y = Math.atan2(flyDir.x, flyDir.z);
+
+  // Modelo GLB o fallback
+  let modelMesh;
+  if (_areosaurModel) {
+    modelMesh = _areosaurModel.clone();
+    modelMesh.scale.setScalar(18.0);
+    modelMesh.rotation.y = Math.PI; // corrige orientación: frente hacia adelante
+    group.add(modelMesh);
+  } else {
+    modelMesh = new THREE.Mesh(
+      new THREE.ConeGeometry(1.5, 5, 5),
+      new THREE.MeshStandardMaterial({ color: 0x884422, emissive: 0x441100, emissiveIntensity: 0.5 })
+    );
+    modelMesh.rotation.x = Math.PI / 2;
+    group.add(modelMesh);
+  }
+
+  // Motor glow
+  const engineLight = new THREE.PointLight(0xff6600, 2, 15);
+  engineLight.position.set(0, 0, 1.5);
+  group.add(engineLight);
+
+  // Barra de vida naranja
+  const hbBg = new THREE.Mesh(
+    new THREE.PlaneGeometry(size * 2, 0.22),
+    new THREE.MeshBasicMaterial({ color: 0x440000, side: THREE.DoubleSide })
+  );
+  hbBg.position.y = size + 0.6;
+  group.add(hbBg);
+
+  const hbFill = new THREE.Mesh(
+    new THREE.PlaneGeometry(size * 2, 0.22),
+    new THREE.MeshBasicMaterial({ color: 0xff8800, side: THREE.DoubleSide })
+  );
+  hbFill.position.y = size + 0.6; hbFill.position.z = 0.01;
+  group.add(hbFill);
+
+  // ── Trazado de ruta visible ────────────────────────────────────────────────
+  // Línea aérea punteada en altura de vuelo (dashes que avanzan)
+  const pathPts = [
+    new THREE.Vector3(sx, altitude, sz),
+    new THREE.Vector3(tx, altitude, tz),
+  ];
+  const pathLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(pathPts),
+    new THREE.LineDashedMaterial({
+      color: 0xff6600,
+      dashSize: 10, gapSize: 6,
+      transparent: true, opacity: 0.60,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  pathLine.computeLineDistances();
+  scene.add(pathLine);
+
+  // Sombra de ruta en el suelo (proyección a y≈0.3, muy tenue)
+  const groundPts = [
+    new THREE.Vector3(sx, 0.3, sz),
+    new THREE.Vector3(tx, 0.3, tz),
+  ];
+  const groundLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(groundPts),
+    new THREE.LineDashedMaterial({
+      color: 0xff3300,
+      dashSize: 14, gapSize: 10,
+      transparent: true, opacity: 0.22,
+      depthWrite: false,
+    })
+  );
+  groundLine.computeLineDistances();
+  scene.add(groundLine);
+
+  group.userData = {
+    type:        { speed, hp, size, score: 150 + wave * 10, color: 0xff8800 },
+    mesh:        modelMesh,
+    hbFill,
+    engineLight,
+    pathLine, groundLine,
+    hp, maxHp:   hp,
+    speed,
+    flyDir,
+    flyTarget:   new THREE.Vector3(tx, altitude, tz),
+    flyAltitude: altitude,
+    bobOffset:   Math.random() * Math.PI * 2,
+    bombCooldown: 1.5 + Math.random(),
+    rotSpeed:    0,
+    burnTimer: 0, burnDPS: 0,
+    slowTimer: 0, slowFactor: 1,
+    isFlyer: true,
+  };
+
+  scene.add(group);
+  enemies.push(group);
+  enemyOutline.selectedObjects.push(group);
+  waveEnemiesLeft++;
+}
+
+function _cleanFlyerPath(enemy) {
+  const d = enemy.userData;
+  if (d.pathLine)   { scene.remove(d.pathLine);   d.pathLine.geometry.dispose();   d.pathLine   = null; }
+  if (d.groundLine) { scene.remove(d.groundLine); d.groundLine.geometry.dispose(); d.groundLine = null; }
+}
+
 // Flash de oleada — iluminación estroboscópica de 2 segundos
 let _waveFlashTimer = 0;
 let _waveFlashPhase = 0;
@@ -1786,12 +2016,19 @@ function updateWaveFlash(delta) {
 }
 
 function spawnWave(waveNum) {
-  drumBpm = 84 + waveNum; // ola 1 = 85 BPM, ola 2 = 86, etc.
+  drumBpm = 84 + waveNum;
   const count = 5+waveNum*3;
   const types = Math.min(waveNum, ENEMY_BASE_STATS.length);
   for (let i=0; i<count; i++) {
     const t = Math.floor(Math.random()*types);
     setTimeout(()=>spawnEnemy(t), i*300);
+  }
+  // Areosaurs a partir de la oleada 2, cantidad creciente
+  if (waveNum >= 2) {
+    const areosaurCount = Math.min(1 + Math.floor((waveNum - 2) / 2), 4);
+    for (let i = 0; i < areosaurCount; i++) {
+      setTimeout(() => spawnAreosaur(), 1500 + i * 2500);
+    }
   }
   triggerWaveFlash();
   waveAnnounce.textContent = `OLA ${waveNum}`;
@@ -1801,6 +2038,7 @@ function spawnWave(waveNum) {
 
 // ─── Collision Detection ──────────────────────────────────────────────────────
 function killEnemy(enemy, idx) {
+  if (enemy.userData.isFlyer) _cleanFlyerPath(enemy);
   playExplosionSound(enemy.position.clone());
   spawnHitParticles(enemy.position.clone(), 0xffff00);
   scene.remove(enemy); enemies.splice(idx, 1);
@@ -1815,6 +2053,7 @@ function killEnemy(enemy, idx) {
 }
 
 function removeEnemy(enemy, idx) {
+  if (enemy.userData.isFlyer) _cleanFlyerPath(enemy);
   scene.remove(enemy); enemies.splice(idx,1);
   const oi = enemyOutline.selectedObjects.indexOf(enemy);
   if (oi!==-1) enemyOutline.selectedObjects.splice(oi,1);
@@ -1872,6 +2111,7 @@ function restartGame() {
   for (const e of enemies) scene.remove(e); enemies.length=0; enemyOutline.selectedObjects.length=0;
   for (const b of bullets) scene.remove(b); bullets.length=0;
   for (const p of particles) scene.remove(p.mesh); particles.length=0;
+  for (const b of aeroBombs) scene.remove(b.mesh); aeroBombs.length=0;
   score=0; wave=1; coreHealth=100; gameOver=false; killStreak=0; waveEnemiesLeft=0; waveCooldown=0.5; drumBpm=85;
   for (const t of turretData) { t.base.rotation.y=t.initialYaw; t.pitch.rotation.x=0; t.autoCooldown=0; t.autoBurstLeft=0; }
   turretData[activeTurretIndex].pitch.remove(camera);
@@ -2041,6 +2281,41 @@ function animate() {
     if(d.slowTimer>0) d.slowTimer-=delta;
     const speedMult = d.slowTimer>0 ? d.slowFactor : 1;
 
+    if (d.isFlyer) {
+      // ── Areosaur: vuelo recto A→B sobre el núcleo ──────────────────────────
+      e.position.addScaledVector(d.flyDir, d.speed * speedMult * delta);
+      e.position.y = d.flyAltitude + Math.sin(elapsed * 1.4 + d.bobOffset) * 1.0;
+
+      // Alabeo suave del modelo
+      if (d.mesh) d.mesh.rotation.z = Math.sin(elapsed * 0.9 + d.bobOffset) * 0.12;
+
+      // Motor pulsa
+      if (d.engineLight) d.engineLight.intensity = 1.8 + Math.sin(elapsed * 6 + d.bobOffset) * 0.5;
+
+      // Bombardeo cuando está sobre el núcleo (distancia horizontal)
+      const hd2 = e.position.x * e.position.x + e.position.z * e.position.z;
+      d.bombCooldown -= delta;
+      if (hd2 < 50 * 50 && d.bombCooldown <= 0) {
+        dropBomb(e.position.clone());
+        d.bombCooldown = 0.9 + Math.random() * 1.0;
+      }
+
+      // Animar dashes hacia adelante
+      if (d.pathLine)   d.pathLine.material.dashOffset   -= d.speed * delta * 0.04;
+      if (d.groundLine) d.groundLine.material.dashOffset -= d.speed * delta * 0.03;
+
+      // Llegó al destino — sale del mapa sin puntos
+      if (e.position.distanceTo(d.flyTarget) < 10) {
+        _cleanFlyerPath(e);
+        removeEnemy(e, ei); continue;
+      }
+
+      // Barra de vida siempre mira a la cámara
+      e.children[e.children.length - 2]?.lookAt(_camWP);
+      e.children[e.children.length - 1]?.lookAt(_camWP);
+      continue;
+    }
+
     const dir=new THREE.Vector3().subVectors(coreGroup.position,e.position).normalize();
     e.position.addScaledVector(dir, d.speed*speedMult*delta);
     e.position.y=terrainHeight(e.position.x,e.position.z)+d.type.size+Math.sin(elapsed*3+d.bobOffset)*.15;
@@ -2063,6 +2338,7 @@ function animate() {
   updateLightning(delta);
   updateWaveFlash(delta);
   updateShootingStars(delta);
+  updateAeroBombs(delta);
 
   // Core label billboard — siempre mira a la cámara
   coreLabelMesh.quaternion.copy(camera.quaternion);
