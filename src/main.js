@@ -325,96 +325,205 @@ function playExplosionSound(worldPos) {
   rSrc.start(t);
 }
 
-// Disparo del jugador — sin espacialización, volumen normal
+// Disparo del jugador — sin espacialización, sonido de cañón pesado
 function playShootSound() {
   const ctx = Howler.ctx;
   if (!ctx) return;
   const fire = () => {
     const reverb = getReverb(ctx);
     const t      = ctx.currentTime;
-    const freqHi = randPitch(320);
-    const freqLo = randPitch(38);
-
-    // Bus de mezcla — seco va directo a masterGain (no pasa por duck)
     const { masterGain } = ensureMasterChain(ctx);
     triggerDuck(ctx);
+
+    function makeDistortion(amount) {
+      const ws = ctx.createWaveShaper();
+      const curve = new Float32Array(256);
+      for (let i = 0; i < 256; i++) {
+        const x = (i * 2) / 256 - 1;
+        curve[i] = (Math.PI + amount) * x / (Math.PI + amount * Math.abs(x));
+      }
+      ws.curve = curve;
+      return ws;
+    }
+
     const dry = ctx.createGain(); dry.connect(masterGain);
     const wet = ctx.createGain(); wet.connect(reverb);
-    dry.gain.value = 1; wet.gain.value = 0.7; // −30% reverb
+    dry.gain.value = 1.0;
+    wet.gain.value = 1.4;
 
-    // Capa 1: sawtooth principal — el cuerpo del disparo
-    const osc1 = ctx.createOscillator();
-    const g1   = ctx.createGain();
-    osc1.type  = 'sawtooth';
-    osc1.frequency.setValueAtTime(freqHi, t);
-    osc1.frequency.exponentialRampToValueAtTime(freqLo, t + 0.12);
-    g1.gain.setValueAtTime(0.18, t);
-    g1.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
-    osc1.connect(g1); g1.connect(dry); g1.connect(wet);
-    osc1.start(t); osc1.stop(t + 0.13);
-
-    // Capa 2: square ligeramente desafinado — añade grosor y armónicos pares
-    const osc2 = ctx.createOscillator();
-    const g2   = ctx.createGain();
-    osc2.type  = 'square';
-    osc2.frequency.setValueAtTime(freqHi * 0.985, t);
-    osc2.frequency.exponentialRampToValueAtTime(freqLo * 0.985, t + 0.10);
-    g2.gain.setValueAtTime(0.06, t);
-    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.10);
-    osc2.connect(g2); g2.connect(dry);
-    osc2.start(t); osc2.stop(t + 0.10);
-
-    // Capa 3: noise burst en el transiente — el "crack" inicial del disparo
-    const nLen  = Math.floor(ctx.sampleRate * 0.028);
-    const nBuf  = ctx.createBuffer(1, nLen, ctx.sampleRate);
-    const nData = nBuf.getChannelData(0);
-    for (let i = 0; i < nLen; i++) nData[i] = (Math.random() * 2 - 1) * (1 - i / nLen);
-    const noise = ctx.createBufferSource();
-    noise.buffer = nBuf;
-    const hpf   = ctx.createBiquadFilter();
-    hpf.type    = 'highpass'; hpf.frequency.value = 1800;
-    const gNoise = ctx.createGain();
-    gNoise.gain.setValueAtTime(0.20, t);
-    gNoise.gain.exponentialRampToValueAtTime(0.001, t + 0.028);
-    noise.connect(hpf); hpf.connect(gNoise); gNoise.connect(dry);
-    noise.start(t);
-
-    // Capa 4: sub-sine brevísimo — punch de baja frecuencia
+    // Capa 1: sub-boom — descenso largo y pesado (el peso del cañón)
     const sub  = ctx.createOscillator();
     const gSub = ctx.createGain();
     sub.type   = 'sine';
-    sub.frequency.setValueAtTime(randPitch(60), t);
-    sub.frequency.exponentialRampToValueAtTime(20, t + 0.06);
-    gSub.gain.setValueAtTime(0.28, t);
-    gSub.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    sub.frequency.setValueAtTime(randPitch(95), t);
+    sub.frequency.exponentialRampToValueAtTime(22, t + 0.32);
+    gSub.gain.setValueAtTime(0, t);
+    gSub.gain.linearRampToValueAtTime(1.0, t + 0.004);
+    gSub.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
     sub.connect(gSub); gSub.connect(dry);
-    sub.start(t); sub.stop(t + 0.06);
+    sub.start(t); sub.stop(t + 0.32);
+
+    // Capa 2: sawtooth con distorsión — cuerpo y crunch del disparo
+    const osc1 = ctx.createOscillator();
+    const dist = makeDistortion(130);
+    const lpf1 = ctx.createBiquadFilter();
+    const g1   = ctx.createGain();
+    osc1.type  = 'sawtooth';
+    osc1.frequency.setValueAtTime(randPitch(290), t);
+    osc1.frequency.exponentialRampToValueAtTime(randPitch(32), t + 0.24);
+    lpf1.type  = 'lowpass'; lpf1.frequency.value = 2400;
+    g1.gain.setValueAtTime(0.42, t);
+    g1.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+    osc1.connect(dist); dist.connect(lpf1); lpf1.connect(g1);
+    g1.connect(dry); g1.connect(wet);
+    osc1.start(t); osc1.stop(t + 0.24);
+
+    // Capa 3: square detuneado — grosor en frecuencias medias
+    const osc2 = ctx.createOscillator();
+    const g2   = ctx.createGain();
+    osc2.type  = 'square';
+    osc2.frequency.setValueAtTime(randPitch(145), t);
+    osc2.frequency.exponentialRampToValueAtTime(28, t + 0.20);
+    g2.gain.setValueAtTime(0.16, t);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
+    osc2.connect(g2); g2.connect(dry); g2.connect(wet);
+    osc2.start(t); osc2.stop(t + 0.20);
+
+    // Capa 4: crack inicial — noise HPF intenso y breve
+    const nLen  = Math.floor(ctx.sampleRate * 0.038);
+    const nBuf  = ctx.createBuffer(1, nLen, ctx.sampleRate);
+    const nData = nBuf.getChannelData(0);
+    for (let i = 0; i < nLen; i++) nData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nLen, 0.4);
+    const nSrc   = ctx.createBufferSource(); nSrc.buffer = nBuf;
+    const hpf    = ctx.createBiquadFilter();
+    hpf.type     = 'highpass'; hpf.frequency.value = 2800;
+    const gCrack = ctx.createGain();
+    gCrack.gain.setValueAtTime(0.55, t);
+    gCrack.gain.exponentialRampToValueAtTime(0.001, t + 0.038);
+    nSrc.connect(hpf); hpf.connect(gCrack); gCrack.connect(dry);
+    nSrc.start(t);
+
+    // Capa 5: pressure wave — noise LPF, el "whomp" de la onda de presión
+    const pLen  = Math.floor(ctx.sampleRate * 0.12);
+    const pBuf  = ctx.createBuffer(1, pLen, ctx.sampleRate);
+    const pData = pBuf.getChannelData(0);
+    for (let i = 0; i < pLen; i++) pData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / pLen, 1.6);
+    const pSrc  = ctx.createBufferSource(); pSrc.buffer = pBuf;
+    const lpfP  = ctx.createBiquadFilter();
+    lpfP.type   = 'lowpass'; lpfP.frequency.value = 380;
+    const gPres = ctx.createGain();
+    gPres.gain.setValueAtTime(0.65, t);
+    gPres.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    pSrc.connect(lpfP); lpfP.connect(gPres); gPres.connect(dry); gPres.connect(wet);
+    pSrc.start(t);
   };
   ctx.state === 'suspended' ? ctx.resume().then(fire) : fire();
 }
 
-// Disparo automático — 30% más bajo, audio espacial 3D desde la posición de la torreta
+// Disparo automático — espacial 3D, versión aligerada del cañón principal
 function playAutoShootSound(worldPos) {
   const ctx = Howler.ctx;
   if (!ctx || ctx.state === 'suspended') return;
-  const panner  = makeSpatialPanner(ctx, worldPos);
-  const reverb  = getReverb(ctx);
-  const freqHi  = randPitch(320);
-  const freqLo  = randPitch(38);
-  const osc     = ctx.createOscillator();
-  const gainDry = ctx.createGain();
-  const gainWet = ctx.createGain();
-  osc.connect(gainDry); gainDry.connect(panner);
-  osc.connect(gainWet); gainWet.connect(reverb);
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(freqHi, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(freqLo, ctx.currentTime + 0.12);
-  gainDry.gain.setValueAtTime(0.154, ctx.currentTime);
-  gainDry.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.13);
-  gainWet.gain.setValueAtTime(0.029, ctx.currentTime); // −30% reverb
-  gainWet.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.13);
-  osc.start(ctx.currentTime);
-  osc.stop(ctx.currentTime + 0.13);
+  const panner = makeSpatialPanner(ctx, worldPos);
+  const reverb = getReverb(ctx);
+  const t      = ctx.currentTime;
+
+  const ws    = ctx.createWaveShaper();
+  const curve = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = (i * 2) / 256 - 1;
+    curve[i] = (Math.PI + 70) * x / (Math.PI + 70 * Math.abs(x));
+  }
+  ws.curve = curve;
+
+  // Sub punch espacializado
+  const sub  = ctx.createOscillator();
+  const gSub = ctx.createGain();
+  sub.type   = 'sine';
+  sub.frequency.setValueAtTime(randPitch(85), t);
+  sub.frequency.exponentialRampToValueAtTime(22, t + 0.24);
+  gSub.gain.setValueAtTime(0, t);
+  gSub.gain.linearRampToValueAtTime(0.60, t + 0.004);
+  gSub.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+  sub.connect(gSub); gSub.connect(panner);
+  sub.start(t); sub.stop(t + 0.24);
+
+  // Cuerpo sawtooth con distorsión, espacializado
+  const osc  = ctx.createOscillator();
+  const lpf  = ctx.createBiquadFilter();
+  const gDry = ctx.createGain();
+  const gWet = ctx.createGain();
+  lpf.type   = 'lowpass'; lpf.frequency.value = 2100;
+  osc.type   = 'sawtooth';
+  osc.frequency.setValueAtTime(randPitch(270), t);
+  osc.frequency.exponentialRampToValueAtTime(randPitch(30), t + 0.20);
+  gDry.gain.setValueAtTime(0.26, t);
+  gDry.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
+  gWet.gain.setValueAtTime(0.10, t);
+  gWet.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
+  osc.connect(ws); ws.connect(lpf);
+  lpf.connect(gDry); gDry.connect(panner);
+  lpf.connect(gWet); gWet.connect(reverb);
+  osc.start(t); osc.stop(t + 0.20);
+
+  // Crack espacializado
+  const nLen  = Math.floor(ctx.sampleRate * 0.030);
+  const nBuf  = ctx.createBuffer(1, nLen, ctx.sampleRate);
+  const nData = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nLen, 0.5);
+  const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+  const hpf  = ctx.createBiquadFilter();
+  hpf.type   = 'highpass'; hpf.frequency.value = 2400;
+  const gCr  = ctx.createGain();
+  gCr.gain.setValueAtTime(0.32, t);
+  gCr.gain.exponentialRampToValueAtTime(0.001, t + 0.030);
+  nSrc.connect(hpf); hpf.connect(gCr); gCr.connect(panner);
+  nSrc.start(t);
+}
+
+function playThunderSound() {
+  const ctx = Howler.ctx;
+  if (!ctx || ctx.state === 'suspended') return;
+  const { masterGain } = ensureMasterChain(ctx);
+  const t   = ctx.currentTime;
+  const dur = 1.6 + Math.random() * 1.4;
+  const V   = 0.45 + Math.random() * 0.30;
+
+  // Crack inicial — el "bang" del rayo
+  const cLen  = Math.floor(ctx.sampleRate * 0.09);
+  const cBuf  = ctx.createBuffer(1, cLen, ctx.sampleRate);
+  const cData = cBuf.getChannelData(0);
+  for (let i = 0; i < cLen; i++) cData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / cLen, 0.8);
+  const cSrc = ctx.createBufferSource(); cSrc.buffer = cBuf;
+  const cLpf = ctx.createBiquadFilter(); cLpf.type = 'lowpass'; cLpf.frequency.value = 1800;
+  const gC   = ctx.createGain(); gC.gain.value = V * 1.4;
+  cSrc.connect(cLpf); cLpf.connect(gC); gC.connect(masterGain);
+  cSrc.start(t);
+
+  // Rumble sub — grave largo
+  const sub  = ctx.createOscillator();
+  const gSub = ctx.createGain();
+  sub.type   = 'sine';
+  sub.frequency.setValueAtTime(35 + Math.random() * 18, t);
+  sub.frequency.exponentialRampToValueAtTime(18, t + dur);
+  gSub.gain.setValueAtTime(0, t);
+  gSub.gain.linearRampToValueAtTime(V * 0.9, t + 0.04);
+  gSub.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  sub.connect(gSub); gSub.connect(masterGain);
+  sub.start(t); sub.stop(t + dur);
+
+  // Noise rumble — textura del trueno
+  const nLen  = Math.floor(ctx.sampleRate * dur);
+  const nBuf  = ctx.createBuffer(1, nLen, ctx.sampleRate);
+  const nData = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nLen, 0.35);
+  const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+  const nLpf = ctx.createBiquadFilter(); nLpf.type = 'lowpass'; nLpf.frequency.value = 320;
+  const gN   = ctx.createGain();
+  gN.gain.setValueAtTime(V * 0.7, t);
+  gN.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  nSrc.connect(nLpf); nLpf.connect(gN); gN.connect(masterGain);
+  nSrc.start(t);
 }
 
 // ─── Drum Machine ─────────────────────────────────────────────────────────────
@@ -476,7 +585,7 @@ function ensureDrumChain(ctx) {
   drumReverb.connect(rvLpf); rvLpf.connect(rvReturn); rvReturn.connect(drumComp);
 
   // Bus de entrada — señal directa con LPF leve para distancia
-  _drumBus       = ctx.createGain(); _drumBus.gain.value = 0.42;
+  _drumBus       = ctx.createGain(); _drumBus.gain.value = 0.084;
   const dryLpf   = ctx.createBiquadFilter();
   dryLpf.type    = 'lowpass'; dryLpf.frequency.value = 7000;
   const rvSend   = ctx.createGain(); rvSend.gain.value = 0.62;
@@ -633,6 +742,282 @@ dirLight.shadow.mapSize.width = dirLight.shadow.mapSize.height = 2048;
 scene.add(dirLight);
 const purpleLight = new THREE.PointLight(0x8800ff, 1.5, 30);
 purpleLight.position.set(0, 5, 0); scene.add(purpleLight);
+
+// ─── Lightning System ─────────────────────────────────────────────────────────
+const lightningLight = new THREE.PointLight(0xbbd4ff, 0, 2000);
+lightningLight.position.set(0, 140, 0);
+scene.add(lightningLight);
+
+const lightningFill = new THREE.PointLight(0x8899ff, 0, 3000);
+lightningFill.position.set(0, 60, 0);
+scene.add(lightningFill);
+
+let _lightningTimer = 1.5 + Math.random() * 3;
+let _flashTimer     = 0;
+let _flashPeak      = 0;
+const _boltLines    = []; // { line: Mesh, life, maxLife, initOpacity }
+const _beams        = []; // { beam, halo, impact, life, maxLife }
+
+function makeBoltPoints(ox, oz, startY) {
+  const pts = [];
+  let y = startY, x = ox, z = oz;
+  pts.push(new THREE.Vector3(x, y, z));
+  while (y > 2) {
+    y -= 4 + Math.random() * 9;
+    x += (Math.random() - 0.5) * 22;
+    z += (Math.random() - 0.5) * 22;
+    pts.push(new THREE.Vector3(x, Math.max(2, y), z));
+  }
+  return pts;
+}
+
+// Tubo brillante por CatmullRom — da grosor real al rayo
+function _addBoltTube(pts, radius, color, opacity, life) {
+  if (pts.length < 2) return;
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const geo   = new THREE.TubeGeometry(curve, Math.max(pts.length * 3, 16), radius, 5, false);
+  const mat   = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity,
+    depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  scene.add(mesh);
+  _boltLines.push({ line: mesh, life, maxLife: life, initOpacity: opacity });
+}
+
+function spawnBolt(ox, oz) {
+  const startY   = 120 + Math.random() * 50;
+  const mainPts  = makeBoltPoints(ox, oz, startY);
+  const mainLife = 0.22 + Math.random() * 0.07;
+
+  // Tres capas: outer glow azul, mid cyan, core blanco puro
+  _addBoltTube(mainPts, 2.4,  0x1133ff, 0.10, mainLife);
+  _addBoltTube(mainPts, 1.0,  0x66aaff, 0.38, mainLife - 0.02);
+  _addBoltTube(mainPts, 0.22, 0xffffff, 1.00, mainLife - 0.04);
+
+  // Ramificaciones desde puntos del rayo principal
+  const branches = 3 + Math.floor(Math.random() * 4);
+  for (let b = 0; b < branches; b++) {
+    const splitIdx = 1 + Math.floor(Math.random() * (mainPts.length - 2));
+    const origin   = mainPts[splitIdx].clone();
+    const brPts    = [origin];
+    let bx = origin.x, by = origin.y, bz = origin.z;
+    const brLen = 2 + Math.floor(Math.random() * 4);
+    for (let s = 0; s < brLen; s++) {
+      by -= 4 + Math.random() * 8;
+      bx += (Math.random() - 0.5) * 20;
+      bz += (Math.random() - 0.5) * 20;
+      brPts.push(new THREE.Vector3(bx, Math.max(4, by), bz));
+    }
+    if (brPts.length < 2) continue;
+    const brLife = 0.10 + Math.random() * 0.08;
+    _addBoltTube(brPts, 0.9,  0x2244ee, 0.10, brLife);
+    _addBoltTube(brPts, 0.30, 0xaaccff, 0.60, brLife - 0.01);
+    _addBoltTube(brPts, 0.10, 0xffffff, 0.85, brLife - 0.02);
+  }
+
+  // Haz volumétrico cónico desde el cielo
+  const beamGeo = new THREE.CylinderGeometry(0.15, 9, startY, 8, 1, true);
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0x7799ff, transparent: true, opacity: 0.40,
+    side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const beam = new THREE.Mesh(beamGeo, beamMat);
+  beam.position.set(ox, startY / 2, oz);
+  scene.add(beam);
+
+  // Halo esférico en lo alto
+  const haloGeo = new THREE.SphereGeometry(24, 14, 10);
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.13,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const halo = new THREE.Mesh(haloGeo, haloMat);
+  halo.position.set(ox, startY, oz);
+  scene.add(halo);
+
+  // Destello de impacto en el suelo
+  const impGeo = new THREE.SphereGeometry(12, 10, 8);
+  const impMat = new THREE.MeshBasicMaterial({
+    color: 0x99ccff, transparent: true, opacity: 0.30,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const impact = new THREE.Mesh(impGeo, impMat);
+  impact.position.set(ox, 2, oz);
+  scene.add(impact);
+
+  const beamLife = 0.24 + Math.random() * 0.06;
+  _beams.push({ beam, halo, impact, life: beamLife, maxLife: beamLife });
+}
+
+function triggerLightning() {
+  const bx = (Math.random() - 0.5) * 220;
+  const bz = (Math.random() - 0.5) * 220;
+  spawnBolt(bx, bz);
+  lightningLight.position.set(bx, 140, bz);
+  lightningFill.position.set(bx * 0.5, 50, bz * 0.5);
+  _flashPeak  = 600 + Math.random() * 400;
+  _flashTimer = 0.10 + Math.random() * 0.05;
+  lightningLight.intensity = _flashPeak;
+  lightningFill.intensity  = _flashPeak * 0.4;
+  const flashes = 1 + Math.floor(Math.random() * 3);
+  for (let f = 1; f < flashes; f++) {
+    setTimeout(() => {
+      lightningLight.intensity = _flashPeak * (0.8 - f * 0.2);
+      lightningFill.intensity  = _flashPeak * (0.3 - f * 0.08);
+      _flashTimer = 0.06;
+    }, 60 * f + Math.random() * 50);
+  }
+  setTimeout(playThunderSound, 300 + Math.random() * 2200);
+}
+
+function updateLightning(delta) {
+  _lightningTimer -= delta;
+  if (_lightningTimer <= 0) {
+    triggerLightning();
+    _lightningTimer = 2 + Math.random() * 6;
+  }
+  if (_flashTimer > 0) {
+    _flashTimer -= delta;
+    const decay = Math.pow(0.0002, delta / 0.10);
+    lightningLight.intensity *= decay;
+    lightningFill.intensity  *= decay;
+    if (_flashTimer <= 0) { lightningLight.intensity = 0; lightningFill.intensity = 0; }
+  }
+  for (let i = _boltLines.length - 1; i >= 0; i--) {
+    const b = _boltLines[i];
+    b.life -= delta;
+    b.line.material.opacity = Math.max(0, b.initOpacity * (b.life / b.maxLife));
+    if (b.life <= 0) {
+      scene.remove(b.line); b.line.geometry.dispose();
+      _boltLines.splice(i, 1);
+    }
+  }
+  for (let i = _beams.length - 1; i >= 0; i--) {
+    const b = _beams[i];
+    b.life -= delta;
+    const r = Math.max(0, b.life / b.maxLife);
+    b.beam.material.opacity   = r * 0.40;
+    b.halo.material.opacity   = r * 0.13;
+    b.impact.material.opacity = r * 0.30;
+    if (b.life <= 0) {
+      scene.remove(b.beam);   b.beam.geometry.dispose();
+      scene.remove(b.halo);   b.halo.geometry.dispose();
+      scene.remove(b.impact); b.impact.geometry.dispose();
+      _beams.splice(i, 1);
+    }
+  }
+}
+
+// ─── Shooting Stars ───────────────────────────────────────────────────────────
+const _shootingStars   = [];
+let   _shootingStarTimer = 3 + Math.random() * 10;
+
+function spawnShootingStar() {
+  const angle = Math.random() * Math.PI * 2;
+  const r     = 170 + Math.random() * 40;
+  const sx    = Math.cos(angle) * r;
+  const sz    = Math.sin(angle) * r;
+  const sy    = 72 + Math.random() * 80;
+
+  const dAngle = angle + Math.PI * (0.3 + Math.random() * 0.6) * (Math.random() > 0.5 ? 1 : -1);
+  const dir    = new THREE.Vector3(
+    Math.cos(dAngle), -(0.03 + Math.random() * 0.20), Math.sin(dAngle)
+  ).normalize();
+
+  const speed   = 85 + Math.random() * 145;
+  const tailLen = 16 + Math.random() * 32;
+  const maxLife = (260 + Math.random() * 120) / speed;
+
+  // Núcleo brillante
+  const hGeo = new THREE.SphereGeometry(1.5, 8, 6);
+  const hMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const head = new THREE.Mesh(hGeo, hMat);
+  head.position.set(sx, sy, sz);
+  scene.add(head);
+
+  // Halo exterior azul-blanco
+  const oGeo = new THREE.SphereGeometry(5, 8, 6);
+  const oMat = new THREE.MeshBasicMaterial({
+    color: 0x88aaff, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const glow = new THREE.Mesh(oGeo, oMat);
+  glow.position.set(sx, sy, sz);
+  scene.add(glow);
+
+  // Cola blanca core
+  const tPos0 = new THREE.Vector3(sx, sy, sz);
+  const tPos1 = tPos0.clone().addScaledVector(dir, -tailLen);
+  function makeTailGeo() {
+    return new THREE.BufferGeometry().setFromPoints([tPos0.clone(), tPos1.clone()]);
+  }
+  const tGeo  = makeTailGeo();
+  const tMat  = new THREE.LineBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const tailCore = new THREE.Line(tGeo, tMat);
+  scene.add(tailCore);
+
+  // Cola glow azulada (más larga)
+  const tGeo2 = makeTailGeo();
+  const tMat2 = new THREE.LineBasicMaterial({
+    color: 0x5588ff, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const tailGlow = new THREE.Line(tGeo2, tMat2);
+  scene.add(tailGlow);
+
+  _shootingStars.push({
+    head, glow, tailCore, tailGlow, tGeo, tGeo2,
+    pos: new THREE.Vector3(sx, sy, sz),
+    dir, speed, tailLen, life: 0, maxLife,
+  });
+}
+
+function updateShootingStars(delta) {
+  _shootingStarTimer -= delta;
+  if (_shootingStarTimer <= 0) {
+    const count = 1 + (Math.random() > 0.6 ? 1 : 0);
+    for (let i = 0; i < count; i++)
+      setTimeout(() => spawnShootingStar(), i * (100 + Math.random() * 500));
+    _shootingStarTimer = 5 + Math.random() * 14;
+  }
+  for (let i = _shootingStars.length - 1; i >= 0; i--) {
+    const s = _shootingStars[i];
+    s.life += delta;
+    const t = s.life / s.maxLife;
+    const alpha = Math.max(0, Math.min(1,
+      t < 0.12 ? t / 0.12 : t > 0.85 ? (1 - t) / 0.15 : 1
+    ));
+    s.pos.addScaledVector(s.dir, s.speed * delta);
+    s.head.position.copy(s.pos);
+    s.glow.position.copy(s.pos);
+    const tail1End = s.pos.clone().addScaledVector(s.dir, -s.tailLen);
+    const tail2End = s.pos.clone().addScaledVector(s.dir, -s.tailLen * 1.6);
+    for (const [tg, te] of [[s.tGeo, tail1End], [s.tGeo2, tail2End]]) {
+      const pa = tg.attributes.position;
+      pa.setXYZ(0, s.pos.x, s.pos.y, s.pos.z);
+      pa.setXYZ(1, te.x, te.y, te.z);
+      pa.needsUpdate = true;
+    }
+    s.head.material.opacity      = alpha * 0.95;
+    s.glow.material.opacity      = alpha * 0.22;
+    s.tailCore.material.opacity  = alpha * 0.88;
+    s.tailGlow.material.opacity  = alpha * 0.30;
+    if (s.life >= s.maxLife) {
+      scene.remove(s.head);      s.head.geometry.dispose();
+      scene.remove(s.glow);      s.glow.geometry.dispose();
+      scene.remove(s.tailCore);  s.tGeo.dispose();
+      scene.remove(s.tailGlow);  s.tGeo2.dispose();
+      _shootingStars.splice(i, 1);
+    }
+  }
+}
 
 // ─── Terrain Height ───────────────────────────────────────────────────────────
 // Terreno plano en el centro, se eleva progresivamente hacia los bordes.
@@ -1037,11 +1422,57 @@ const SENSITIVITY = 0.0018;
 const PITCH_UP    =  Math.PI / 9;
 const PITCH_DOWN  = -Math.PI / 5;
 
+// Click mecánico al rotar — cada CLICK_STEP radianes
+const CLICK_STEP = 0.36;
+let _rotAccum = 0;
+let _lastClickTime = 0;
+
+function playRotateClick() {
+  const ctx = Howler.ctx;
+  if (!ctx || ctx.state === 'suspended') return;
+  const now = ctx.currentTime;
+  if (now - _lastClickTime < 0.10) return;
+  _lastClickTime = now;
+
+  const { masterGain } = ensureMasterChain(ctx);
+  const t = now;
+
+  // Cuerpo de madera: sine grave con decay rápido
+  const freq = 180 + Math.random() * 60;
+  const osc  = ctx.createOscillator();
+  const gOsc = ctx.createGain();
+  osc.type   = 'sine';
+  osc.frequency.setValueAtTime(freq, t);
+  osc.frequency.exponentialRampToValueAtTime(freq * 0.55, t + 0.055);
+  gOsc.gain.setValueAtTime(0.38 + Math.random() * 0.08, t);
+  gOsc.gain.exponentialRampToValueAtTime(0.001, t + 0.060);
+  osc.connect(gOsc); gOsc.connect(masterGain);
+  osc.start(t); osc.stop(t + 0.060);
+
+  // Ataque seco de madera: noise LPF 700Hz — textura del golpe sin brillo
+  const nLen  = Math.floor(ctx.sampleRate * 0.016);
+  const nBuf  = ctx.createBuffer(1, nLen, ctx.sampleRate);
+  const nData = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nLen, 0.3);
+  const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+  const lpf  = ctx.createBiquadFilter();
+  lpf.type   = 'lowpass'; lpf.frequency.value = 700;
+  const gN   = ctx.createGain(); gN.gain.value = 0.22;
+  nSrc.connect(lpf); lpf.connect(gN); gN.connect(masterGain);
+  nSrc.start(t);
+}
+
 document.addEventListener('mousemove', e => {
   if (!isLocked || !gameStarted || gameOver || shopOpen) return;
   const t = turretData[activeTurretIndex];
   t.base.rotation.y  -= e.movementX * SENSITIVITY;
   t.pitch.rotation.x  = Math.max(PITCH_DOWN, Math.min(PITCH_UP, t.pitch.rotation.x - e.movementY * SENSITIVITY));
+
+  _rotAccum += Math.abs(e.movementX * SENSITIVITY) + Math.abs(e.movementY * SENSITIVITY);
+  if (_rotAccum >= CLICK_STEP) {
+    _rotAccum -= CLICK_STEP;
+    playRotateClick();
+  }
 });
 
 document.addEventListener('keydown', e => {
@@ -1307,6 +1738,53 @@ function spawnEnemy(typeIndex) {
   waveEnemiesLeft++;
 }
 
+// Flash de oleada — iluminación estroboscópica de 2 segundos
+let _waveFlashTimer = 0;
+let _waveFlashPhase = 0;
+
+function triggerWaveFlash() {
+  _waveFlashTimer = 2.0;
+  _waveFlashPhase = 0;
+
+  // Ráfaga inicial de múltiples bolts en círculo
+  const boltsN = 4 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < boltsN; i++) {
+    const angle = (i / boltsN) * Math.PI * 2;
+    const r     = 40 + Math.random() * 80;
+    setTimeout(() => spawnBolt(Math.cos(angle) * r, Math.sin(angle) * r), i * 120);
+  }
+
+  // Pico de luz máximo — blanquea toda la escena
+  lightningLight.position.set(0, 140, 0);
+  lightningFill.position.set(0, 60, 0);
+  lightningLight.intensity = 1800;
+  lightningFill.intensity  = 900;
+  _flashTimer = 2.0;
+  _flashPeak  = 1800;
+}
+
+function updateWaveFlash(delta) {
+  if (_waveFlashTimer <= 0) return;
+  _waveFlashTimer -= delta;
+  _waveFlashPhase += delta;
+
+  // Estrobos cada ~0.18s durante los 2 segundos
+  const strobeRate = 0.18;
+  if (Math.floor(_waveFlashPhase / strobeRate) > Math.floor((_waveFlashPhase - delta) / strobeRate)) {
+    const intensity = 400 + Math.random() * 600;
+    lightningLight.intensity = intensity;
+    lightningFill.intensity  = intensity * 0.5;
+    _flashTimer = strobeRate * 0.7;
+
+    // bolt aleatorio ocasional durante el flash
+    if (Math.random() > 0.5) {
+      const bx = (Math.random() - 0.5) * 200;
+      const bz = (Math.random() - 0.5) * 200;
+      spawnBolt(bx, bz);
+    }
+  }
+}
+
 function spawnWave(waveNum) {
   drumBpm = 84 + waveNum; // ola 1 = 85 BPM, ola 2 = 86, etc.
   const count = 5+waveNum*3;
@@ -1315,6 +1793,7 @@ function spawnWave(waveNum) {
     const t = Math.floor(Math.random()*types);
     setTimeout(()=>spawnEnemy(t), i*300);
   }
+  triggerWaveFlash();
   waveAnnounce.textContent = `OLA ${waveNum}`;
   waveAnnounce.style.opacity='1'; waveAnnounce.style.transform='translate(-50%,-50%) scale(1.2)';
   setTimeout(()=>{ waveAnnounce.style.opacity='0'; waveAnnounce.style.transform='translate(-50%,-50%) scale(1)'; }, 2000);
@@ -1580,6 +2059,10 @@ function animate() {
     waveCooldown-=delta;
     if(waveCooldown<=0){waveCooldown=WAVE_COOLDOWN_DURATION;spawnWave(wave);wave++;updateHUD();}
   }
+
+  updateLightning(delta);
+  updateWaveFlash(delta);
+  updateShootingStars(delta);
 
   // Core label billboard — siempre mira a la cámara
   coreLabelMesh.quaternion.copy(camera.quaternion);
