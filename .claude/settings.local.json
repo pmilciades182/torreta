@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:pokeapi.co)",
+      "Bash(curl -s \"https://pokeapi.co/api/v2/pokemon/1\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({'stats': d['stats'], 'types': d['types'], 'weight': d['weight'], 'base_experience': d['base_experience']}, indent=2\\)\\)\")",
+      "Bash(node -e \"const chunks=[]; process.stdin.on\\('data',c=>chunks.push\\(c\\)\\); process.stdin.on\\('end',\\(\\)=>{const d=JSON.parse\\(chunks.join\\(''\\)\\); console.log\\(JSON.stringify\\({stats:d.stats.map\\(s=>\\({name:s.stat.name,base_stat:s.base_stat,effort:s.effort}\\)\\),types:d.types.map\\(t=>\\({slot:t.slot,type:t.type.name}\\)\\),weight:d.weight,height:d.height,base_experience:d.base_experience},null,2\\)\\);}\\)\")",
+      "Bash(curl -s \"https://pokeapi.co/api/v2/pokemon/4\")",
+      "Bash(python3 -c ' *)",
+      "Bash(node *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}
