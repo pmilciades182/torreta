@@ -760,6 +760,7 @@ const hexMapSvg    = document.getElementById('hex-map');
 const turretLabel  = document.getElementById('turret-label');
 const shopEl       = document.getElementById('shop');
 const stateFlash   = document.getElementById('state-flash');
+const typeEffectEl = document.getElementById('type-effect');
 
 // ─── Lights ───────────────────────────────────────────────────────────────────
 scene.add(new THREE.AmbientLight(0x6644cc, 1.4));
@@ -1214,6 +1215,38 @@ const BULLET_TYPES = {
   slowing:     { name: 'LENTIZANTE',  color: 0x4488ff, speed: 50, baseDamage: 1, unlockCost: 120, special: 'slow',   slowFactor: 0.35, slowTime: 2.5 },
   burning:     { name: 'QUEMANTE',    color: 0xff4400, speed: 55, baseDamage: 1, unlockCost: 130, special: 'burn',   burnDPS: 0.8,     burnTime: 3.0 },
 };
+
+// ─── Pokemon Type Resistance System (Opción 3) ────────────────────────────────
+// Tabla de efectividad derivada de PokeAPI /type/{name}/damage_relations
+// Cada bala mapea a un tipo Pokemon; la efectividad modifica el daño aplicado.
+const BULLET_POKE_TYPE = {
+  basic:       'normal',
+  explosive:   'rock',
+  penetrating: 'steel',
+  slowing:     'ice',
+  burning:     'fire',
+};
+
+// type_chart[atacante][defensor] = multiplicador de daño
+// 2 = súper efectivo, 0.5 = poco efectivo, 0 = sin efecto, 1 = normal
+const TYPE_CHART = {
+  normal:  { rock:0.5, steel:0.5, ghost:0 },
+  rock:    { flying:2, bug:2, fire:2, ice:2,  fighting:0.5, ground:0.5, steel:0.5 },
+  steel:   { ice:2, rock:2, fairy:2,          steel:0.5, fire:0.5, water:0.5, electric:0.5 },
+  ice:     { flying:2, ground:2, grass:2, dragon:2,  water:0.5, ice:0.5, steel:0.5, fire:0.5 },
+  fire:    { grass:2, ice:2, bug:2, steel:2,   fire:0.5, water:0.5, rock:0.5, dragon:0.5 },
+};
+
+function getTypeMultiplier(bulletKey, enemyTypes) {
+  const attackType = BULLET_POKE_TYPE[bulletKey];
+  if (!attackType || !TYPE_CHART[attackType]) return 1;
+  const chart = TYPE_CHART[attackType];
+  let mult = 1;
+  for (const defType of enemyTypes) {
+    if (chart[defType] !== undefined) mult *= chart[defType];
+  }
+  return mult;
+}
 
 // Cached geo/mat per bullet type
 const _bGeo = {}, _bMat = {};
@@ -1728,10 +1761,35 @@ function spawnExplosion(pos, scale=1.0) {
 }
 
 // ─── Bullet Hit Effects ───────────────────────────────────────────────────────
+let _typeEffectTimer = null;
+function showTypeEffect(mult) {
+  if (mult === 1) return;
+  clearTimeout(_typeEffectTimer);
+  if (mult >= 2) {
+    typeEffectEl.textContent = '¡SÚPER EFECTIVO! ×' + mult;
+    typeEffectEl.style.color = '#ffee00';
+    typeEffectEl.style.textShadow = '0 0 18px #ffcc00, 0 0 36px rgba(255,200,0,.5)';
+  } else if (mult === 0) {
+    typeEffectEl.textContent = '¡NO AFECTA!';
+    typeEffectEl.style.color = '#888888';
+    typeEffectEl.style.textShadow = '0 0 8px #555555';
+  } else {
+    typeEffectEl.textContent = 'POCO EFECTIVO ×' + mult;
+    typeEffectEl.style.color = '#aaaaff';
+    typeEffectEl.style.textShadow = '0 0 10px #6666ff';
+  }
+  typeEffectEl.style.opacity = '1';
+  _typeEffectTimer = setTimeout(() => { typeEffectEl.style.opacity = '0'; }, 900);
+}
+
 function applyBulletHit(bullet, enemy) {
   const btype = BULLET_TYPES[bullet.bdata.type];
-  enemy.userData.hp -= bullet.bdata.damage;
+  const enemyTypes = enemy.userData.pokeTypes ?? ['normal'];
+  const typeMult = getTypeMultiplier(bullet.bdata.type, enemyTypes);
+  const finalDmg = bullet.bdata.damage * typeMult;
+  enemy.userData.hp -= finalDmg;
   refreshHealthBar(enemy);
+  showTypeEffect(typeMult);
 
   if (btype.special==='slow') {
     enemy.userData.slowTimer  = btype.slowTime;
