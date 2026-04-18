@@ -7,8 +7,14 @@ import { ShaderPass }     from 'three/addons/postprocessing/ShaderPass.js'
 import { GLTFLoader }     from 'three/addons/loaders/GLTFLoader.js'
 import { Howl, Howler } from 'howler';
 import areosaurUrl from '../models/Areosaur.1.glb?url';
+import { 
+  BULLET_TYPES, BULLET_POKE_TYPE, TYPE_CHART, UPGRADE_DEFS,
+  TURRET_POSITIONS, TURRET_MAP_POSITIONS, ENEMY_BASE_STATS, ENEMY_SIZE_TIERS,
+  POKEMON_GROWTH, POKE_TYPE_COLORS, POKE_WAVE_POOLS 
+} from './constants.js';
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0d0730);
 scene.fog = new THREE.Fog(0x0d0730, 60, 220);
@@ -1207,35 +1213,7 @@ function updateCoreLabel() {
 }
 updateCoreLabel();
 
-// ─── Bullet Types ─────────────────────────────────────────────────────────────
-const BULLET_TYPES = {
-  basic:       { name: 'BÁSICA',      color: 0xffff00, speed: 60, baseDamage: 1, unlockCost:   0, special: null },
-  explosive: { name: 'EXPLOSIVA', color: 0xff6600, speed: 45, baseDamage: 2, unlockCost: 150, special: 'aoe', aoeRadius: 2.5, aoeDamage: 1 },
-  penetrating: { name: 'PENETRANTE',  color: 0x00ccff, speed: 70, baseDamage: 1, unlockCost: 100, special: 'pierce' },
-  slowing:     { name: 'LENTIZANTE',  color: 0x4488ff, speed: 50, baseDamage: 1, unlockCost: 120, special: 'slow',   slowFactor: 0.35, slowTime: 2.5 },
-  burning:     { name: 'QUEMANTE',    color: 0xff4400, speed: 55, baseDamage: 1, unlockCost: 130, special: 'burn',   burnDPS: 0.8,     burnTime: 3.0 },
-};
-
-// ─── Pokemon Type Resistance System (Opción 3) ────────────────────────────────
-// Tabla de efectividad derivada de PokeAPI /type/{name}/damage_relations
-// Cada bala mapea a un tipo Pokemon; la efectividad modifica el daño aplicado.
-const BULLET_POKE_TYPE = {
-  basic:       'normal',
-  explosive:   'rock',
-  penetrating: 'steel',
-  slowing:     'ice',
-  burning:     'fire',
-};
-
-// type_chart[atacante][defensor] = multiplicador de daño
-// 2 = súper efectivo, 0.5 = poco efectivo, 0 = sin efecto, 1 = normal
-const TYPE_CHART = {
-  normal:  { rock:0.5, steel:0.5, ghost:0 },
-  rock:    { flying:2, bug:2, fire:2, ice:2,  fighting:0.5, ground:0.5, steel:0.5 },
-  steel:   { ice:2, rock:2, fairy:2,          steel:0.5, fire:0.5, water:0.5, electric:0.5 },
-  ice:     { flying:2, ground:2, grass:2, dragon:2,  water:0.5, ice:0.5, steel:0.5, fire:0.5 },
-  fire:    { grass:2, ice:2, bug:2, steel:2,   fire:0.5, water:0.5, rock:0.5, dragon:0.5 },
-};
+// ─── Bullet Types & Upgrades ──────────────────────────────────────────────────
 
 function getTypeMultiplier(bulletKey, enemyTypes) {
   const attackType = BULLET_POKE_TYPE[bulletKey];
@@ -1255,12 +1233,7 @@ for (const [k, bt] of Object.entries(BULLET_TYPES)) {
   _bMat[k] = new THREE.MeshStandardMaterial({ color: bt.color, emissive: bt.color, emissiveIntensity: 1.5 });
 }
 
-// ─── Upgrade Definitions ──────────────────────────────────────────────────────
-const UPGRADE_DEFS = {
-  autoRate: { label: 'Cadencia Auto', costs: [80,  160, 280],  values: [2.5, 1.8, 1.2, 0.8] },
-  damage:   { label: 'Daño',          costs: [100, 200, 350],  values: [1,   1.5, 2,   3  ] },
-  burst:    { label: 'Ráfaga',        costs: [120, 240],       values: [2,   3,   4       ] },
-};
+// ─── Upgrade Helpers ──────────────────────────────────────────────────────
 const getAutoRate  = t => UPGRADE_DEFS.autoRate.values[t.upgrades.autoRate];
 const getDamageMult = t => UPGRADE_DEFS.damage.values[t.upgrades.damage];
 const getBurstSize = t => UPGRADE_DEFS.burst.values[t.upgrades.burst];
@@ -1270,18 +1243,8 @@ const TURRET_COUNT = 6;
 let activeTurretIndex = 0;
 const turretData = [];
 
-// Define specific positions and orientations for each turret
-const TURRET_POSITIONS = [
-  // Front Group (aiming generally towards negative Z)
-  { x: -8, z: -10, yaw: Math.PI + Math.PI / 8 }, // Left-Front, pointing slightly left-forward
-  { x:  0, z: -10, yaw: Math.PI             }, // Center-Front, pointing straight forward
-  { x:  8, z: -10, yaw: Math.PI - Math.PI / 8 }, // Right-Front, pointing slightly right-forward
+// Define specific positions and orientations for each turret (imported from constants.js)
 
-  // Back Group (aiming generally towards positive Z)
-  { x: -8, z:  10, yaw: Math.PI / 8     }, // Left-Rear, pointing slightly left-backward
-  { x:  0, z:  10, yaw: 0               }, // Center-Rear, pointing straight backward
-  { x:  8, z:  10, yaw: -Math.PI / 8    }, // Right-Rear, pointing slightly right-backward
-];
 
 function buildTurret(index) {
   const posData = TURRET_POSITIONS[index];
@@ -1413,15 +1376,8 @@ function toggleTurretState() {
 }
 
 // ─── Hex Map ──────────────────────────────────────────────────────────────────
-// Define specific positions for each turret on the 2D map
-const TURRET_MAP_POSITIONS = [
-  { cx: -30, cy: -30 }, // Left-Front
-  { cx:   0, cy: -30 }, // Center-Front
-  { cx:  30, cy: -30 }, // Right-Front
-  { cx: -30, cy:  30 }, // Left-Rear
-  { cx:   0, cy:  30 }, // Center-Rear
-  { cx:  30, cy:  30 }, // Right-Rear
-];
+// Define specific positions for each turret on the 2D map (imported from constants.js)
+
 
 (function buildHexMapSvg() {
   const core = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -1829,15 +1785,7 @@ const _toonGrad = (() => {
 })();
 
 // ─── Enemies ──────────────────────────────────────────────────────────────────
-const ENEMY_BASE_STATS = [
-  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200, growthRate:'fast'    }, // Rojo: glass cannon
-  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600, growthRate:'medium'  }, // Naranja: equilibrado
-  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff, growthRate:'fast'    }, // Morado: velocista
-  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077, growthRate:'slow'    }, // Rosa: tanque
-  { speed:4.0, hp:1, size:.6,  score:15, color:0x00ff00, growthRate:'erratic' }, // Verde: surge (débil→explosivo)
-  { speed:2.5, hp:4, size:.9,  score:30, color:0x0000ff, growthRate:'medium'  }, // Azul: generalista
-  { speed:3.0, hp:2, size:.7,  score:20, color:0xffff00, growthRate:'slow'    }, // Amarillo: slow-build
-];
+
 
 const ENEMY_GEOMETRIES = [
   (size) => new THREE.OctahedronGeometry(size, 0),
@@ -1849,11 +1797,7 @@ const ENEMY_GEOMETRIES = [
   (size) => new THREE.ConeGeometry(size, size * 1.5, 8),
 ];
 
-const ENEMY_SIZE_TIERS = [
-    { sizeMult: 1.0, speedMult: 1.0, hpMult: 1.0, rarity: 0.5 },
-    { sizeMult: 2.0, speedMult: 0.8, hpMult: 2.0, rarity: 0.4 },
-    { sizeMult: 4.0, speedMult: 0.6, hpMult: 4.0, rarity: 0.1 },
-];
+
 
 // ─── Pokemon Growth Rate Curves ───────────────────────────────────────────────
 // Basado en las fórmulas de PokeAPI /growth-rate.
@@ -1862,88 +1806,8 @@ const ENEMY_SIZE_TIERS = [
 //   medium  → L³     : progresión balanceada estándar
 //   slow    → 5L³/4  : curva suave, techo alto en olas tardías
 //   erratic → tramos : débil hasta ola 4, luego pico repentino
-const POKEMON_GROWTH = {
-  fast:    w => 1 + w * 0.28 + w * w * 0.010,
-  medium:  w => 1 + w * 0.16 + w * w * 0.005,
-  slow:    w => 1 + w * 0.09 + w * w * 0.002,
-  erratic: w => w < 5 ? 1 + w * 0.05 : 1 + (w - 4) * 0.38,
-};
-
 // ─── PokeAPI Local Data — Enemy Templates (Opción 1) ─────────────────────────
-// Datos obtenidos de https://pokeapi.co/api/v2/pokemon/{id} y embebidos localmente.
-// speed  = pokeSpeed / 20        (rango 40-180 → 2-9)
-// hp     = ceil(pokeHp / 18)     (rango 20-160 → 1-9)
-// size   = clamp(height/14, 0.3, 1.4)
-// score  = max(10, round(baseExp/5))
-// color  = color del tipo primario (tabla de 18 tipos)
-// pokeTypes = tipos del Pokemon (usado por el sistema de resistencias en Opción 3)
-const POKE_TYPE_COLORS = {
-  normal:0xA8A878, fire:0xF08030, water:0x6890F0, electric:0xF8D030,
-  grass:0x78C850,  ice:0x98D8D8,  fighting:0xC03028, poison:0xA040A0,
-  ground:0xE0C068, flying:0xA890F0, psychic:0xF85888, bug:0xA8B820,
-  rock:0xB8A038,   ghost:0x705898, dragon:0x7038F8,  dark:0x705848,
-  steel:0xB8B8D0,  fairy:0xEE99AC,
-};
 
-const POKE_WAVE_POOLS = [
-  // Pool 0 — Olas 1-3: Gen 1 básicos
-  [
-    {name:'charmander', speed:3.25,hp:3,size:0.43,score:12,color:0xF08030,growthRate:'medium',pokeTypes:['fire']},
-    {name:'squirtle',   speed:2.15,hp:3,size:0.36,score:13,color:0x6890F0,growthRate:'medium',pokeTypes:['water']},
-    {name:'pikachu',    speed:4.50,hp:2,size:0.30,score:22,color:0xF8D030,growthRate:'fast',  pokeTypes:['electric']},
-    {name:'jigglypuff', speed:1.00,hp:7,size:0.36,score:19,color:0xA8A878,growthRate:'slow',  pokeTypes:['normal','fairy']},
-    {name:'meowth',     speed:4.50,hp:3,size:0.30,score:12,color:0xA8A878,growthRate:'fast',  pokeTypes:['normal']},
-    {name:'abra',       speed:4.50,hp:2,size:0.64,score:12,color:0xF85888,growthRate:'fast',  pokeTypes:['psychic']},
-    {name:'geodude',    speed:1.00,hp:3,size:0.30,score:12,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','ground']},
-    {name:'gastly',     speed:4.00,hp:2,size:0.93,score:12,color:0x705898,growthRate:'fast',  pokeTypes:['ghost','poison']},
-  ],
-  // Pool 1 — Olas 4-6: Gen 1 intermedios
-  [
-    {name:'mankey',     speed:3.50,hp:3,size:0.36,score:12,color:0xC03028,growthRate:'medium',pokeTypes:['fighting']},
-    {name:'growlithe',  speed:3.00,hp:4,size:0.50,score:14,color:0xF08030,growthRate:'medium',pokeTypes:['fire']},
-    {name:'machop',     speed:1.75,hp:4,size:0.57,score:12,color:0xC03028,growthRate:'medium',pokeTypes:['fighting']},
-    {name:'ponyta',     speed:4.50,hp:3,size:0.71,score:16,color:0xF08030,growthRate:'fast',  pokeTypes:['fire']},
-    {name:'grimer',     speed:1.25,hp:5,size:0.64,score:13,color:0xA040A0,growthRate:'slow',  pokeTypes:['poison']},
-    {name:'rhyhorn',    speed:1.25,hp:5,size:0.71,score:14,color:0xE0C068,growthRate:'slow',  pokeTypes:['ground','rock']},
-    {name:'eevee',      speed:2.75,hp:4,size:0.30,score:13,color:0xA8A878,growthRate:'medium',pokeTypes:['normal']},
-    {name:'dragonite',  speed:4.00,hp:6,size:1.40,score:54,color:0x7038F8,growthRate:'fast',  pokeTypes:['dragon','flying']},
-  ],
-  // Pool 2 — Olas 7-9: Gen 1 avanzados
-  [
-    {name:'hitmonlee',  speed:4.35,hp:3,size:1.07,score:32,color:0xC03028,growthRate:'fast',  pokeTypes:['fighting']},
-    {name:'tangela',    speed:3.00,hp:4,size:0.71,score:17,color:0x78C850,growthRate:'medium',pokeTypes:['grass']},
-    {name:'pinsir',     speed:4.25,hp:4,size:1.07,score:35,color:0xA8B820,growthRate:'fast',  pokeTypes:['bug']},
-    {name:'lapras',     speed:3.00,hp:8,size:1.40,score:37,color:0x6890F0,growthRate:'slow',  pokeTypes:['water','ice']},
-    {name:'snorlax',    speed:1.50,hp:9,size:1.40,score:38,color:0xA8A878,growthRate:'slow',  pokeTypes:['normal']},
-    {name:'dratini',    speed:2.50,hp:3,size:1.29,score:12,color:0x7038F8,growthRate:'medium',pokeTypes:['dragon']},
-    {name:'omanyte',    speed:1.75,hp:2,size:0.30,score:14,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','water']},
-    {name:'kabuto',     speed:2.75,hp:2,size:0.36,score:14,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','water']},
-  ],
-  // Pool 3 — Olas 10-14: Gen 2
-  [
-    {name:'chikorita',  speed:2.25,hp:3,size:0.64,score:13,color:0x78C850,growthRate:'medium',pokeTypes:['grass']},
-    {name:'togepi',     speed:1.00,hp:2,size:0.30,score:10,color:0xEE99AC,growthRate:'medium',pokeTypes:['fairy']},
-    {name:'marill',     speed:2.00,hp:4,size:0.30,score:18,color:0x6890F0,growthRate:'medium',pokeTypes:['water','fairy']},
-    {name:'wooper',     speed:1.00,hp:4,size:0.30,score:10,color:0x6890F0,growthRate:'erratic',pokeTypes:['water','ground']},
-    {name:'slugma',     speed:1.00,hp:3,size:0.50,score:10,color:0xF08030,growthRate:'medium',pokeTypes:['fire']},
-    {name:'larvitar',   speed:2.05,hp:3,size:0.43,score:12,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','ground']},
-    {name:'hoothoot',   speed:2.50,hp:4,size:0.50,score:10,color:0xA890F0,growthRate:'medium',pokeTypes:['normal','flying']},
-    {name:'umbreon',    speed:3.25,hp:6,size:0.71,score:37,color:0x705848,growthRate:'slow',  pokeTypes:['dark']},
-  ],
-  // Pool 4 — Olas 15+: Gen 3-4
-  [
-    {name:'treecko',    speed:3.50,hp:3,size:0.36,score:12,color:0x78C850,growthRate:'medium',pokeTypes:['grass']},
-    {name:'ralts',      speed:2.00,hp:2,size:0.30,score:10,color:0xF85888,growthRate:'medium',pokeTypes:['psychic','fairy']},
-    {name:'aron',       speed:1.50,hp:3,size:0.30,score:13,color:0xB8B8D0,growthRate:'medium',pokeTypes:['steel','rock']},
-    {name:'gulpin',     speed:2.00,hp:4,size:0.30,score:12,color:0xA040A0,growthRate:'medium',pokeTypes:['poison']},
-    {name:'spoink',     speed:3.00,hp:4,size:0.50,score:13,color:0xF85888,growthRate:'medium',pokeTypes:['psychic']},
-    {name:'feebas',     speed:4.00,hp:2,size:0.43,score:10,color:0x6890F0,growthRate:'fast',  pokeTypes:['water']},
-    {name:'buneary',    speed:4.25,hp:4,size:0.30,score:14,color:0xA8A878,growthRate:'fast',  pokeTypes:['normal']},
-    {name:'gible',      speed:2.10,hp:4,size:0.50,score:12,color:0x7038F8,growthRate:'medium',pokeTypes:['dragon','ground']},
-    {name:'rotom',      speed:4.55,hp:3,size:0.30,score:31,color:0xF8D030,growthRate:'fast',  pokeTypes:['electric','ghost']},
-    {name:'whismur',    speed:1.40,hp:4,size:0.43,score:10,color:0xA8A878,growthRate:'erratic',pokeTypes:['normal']},
-  ],
-];
 
 function getWavePool(waveNum) {
   if (waveNum >= 15) return POKE_WAVE_POOLS[4];
