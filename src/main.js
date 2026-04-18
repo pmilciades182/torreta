@@ -1810,6 +1810,91 @@ const POKEMON_GROWTH = {
   slow:    w => 1 + w * 0.09 + w * w * 0.002,
   erratic: w => w < 5 ? 1 + w * 0.05 : 1 + (w - 4) * 0.38,
 };
+
+// ─── PokeAPI Local Data — Enemy Templates (Opción 1) ─────────────────────────
+// Datos obtenidos de https://pokeapi.co/api/v2/pokemon/{id} y embebidos localmente.
+// speed  = pokeSpeed / 20        (rango 40-180 → 2-9)
+// hp     = ceil(pokeHp / 18)     (rango 20-160 → 1-9)
+// size   = clamp(height/14, 0.3, 1.4)
+// score  = max(10, round(baseExp/5))
+// color  = color del tipo primario (tabla de 18 tipos)
+// pokeTypes = tipos del Pokemon (usado por el sistema de resistencias en Opción 3)
+const POKE_TYPE_COLORS = {
+  normal:0xA8A878, fire:0xF08030, water:0x6890F0, electric:0xF8D030,
+  grass:0x78C850,  ice:0x98D8D8,  fighting:0xC03028, poison:0xA040A0,
+  ground:0xE0C068, flying:0xA890F0, psychic:0xF85888, bug:0xA8B820,
+  rock:0xB8A038,   ghost:0x705898, dragon:0x7038F8,  dark:0x705848,
+  steel:0xB8B8D0,  fairy:0xEE99AC,
+};
+
+const POKE_WAVE_POOLS = [
+  // Pool 0 — Olas 1-3: Gen 1 básicos
+  [
+    {name:'charmander', speed:3.25,hp:3,size:0.43,score:12,color:0xF08030,growthRate:'medium',pokeTypes:['fire']},
+    {name:'squirtle',   speed:2.15,hp:3,size:0.36,score:13,color:0x6890F0,growthRate:'medium',pokeTypes:['water']},
+    {name:'pikachu',    speed:4.50,hp:2,size:0.30,score:22,color:0xF8D030,growthRate:'fast',  pokeTypes:['electric']},
+    {name:'jigglypuff', speed:1.00,hp:7,size:0.36,score:19,color:0xA8A878,growthRate:'slow',  pokeTypes:['normal','fairy']},
+    {name:'meowth',     speed:4.50,hp:3,size:0.30,score:12,color:0xA8A878,growthRate:'fast',  pokeTypes:['normal']},
+    {name:'abra',       speed:4.50,hp:2,size:0.64,score:12,color:0xF85888,growthRate:'fast',  pokeTypes:['psychic']},
+    {name:'geodude',    speed:1.00,hp:3,size:0.30,score:12,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','ground']},
+    {name:'gastly',     speed:4.00,hp:2,size:0.93,score:12,color:0x705898,growthRate:'fast',  pokeTypes:['ghost','poison']},
+  ],
+  // Pool 1 — Olas 4-6: Gen 1 intermedios
+  [
+    {name:'mankey',     speed:3.50,hp:3,size:0.36,score:12,color:0xC03028,growthRate:'medium',pokeTypes:['fighting']},
+    {name:'growlithe',  speed:3.00,hp:4,size:0.50,score:14,color:0xF08030,growthRate:'medium',pokeTypes:['fire']},
+    {name:'machop',     speed:1.75,hp:4,size:0.57,score:12,color:0xC03028,growthRate:'medium',pokeTypes:['fighting']},
+    {name:'ponyta',     speed:4.50,hp:3,size:0.71,score:16,color:0xF08030,growthRate:'fast',  pokeTypes:['fire']},
+    {name:'grimer',     speed:1.25,hp:5,size:0.64,score:13,color:0xA040A0,growthRate:'slow',  pokeTypes:['poison']},
+    {name:'rhyhorn',    speed:1.25,hp:5,size:0.71,score:14,color:0xE0C068,growthRate:'slow',  pokeTypes:['ground','rock']},
+    {name:'eevee',      speed:2.75,hp:4,size:0.30,score:13,color:0xA8A878,growthRate:'medium',pokeTypes:['normal']},
+    {name:'dragonite',  speed:4.00,hp:6,size:1.40,score:54,color:0x7038F8,growthRate:'fast',  pokeTypes:['dragon','flying']},
+  ],
+  // Pool 2 — Olas 7-9: Gen 1 avanzados
+  [
+    {name:'hitmonlee',  speed:4.35,hp:3,size:1.07,score:32,color:0xC03028,growthRate:'fast',  pokeTypes:['fighting']},
+    {name:'tangela',    speed:3.00,hp:4,size:0.71,score:17,color:0x78C850,growthRate:'medium',pokeTypes:['grass']},
+    {name:'pinsir',     speed:4.25,hp:4,size:1.07,score:35,color:0xA8B820,growthRate:'fast',  pokeTypes:['bug']},
+    {name:'lapras',     speed:3.00,hp:8,size:1.40,score:37,color:0x6890F0,growthRate:'slow',  pokeTypes:['water','ice']},
+    {name:'snorlax',    speed:1.50,hp:9,size:1.40,score:38,color:0xA8A878,growthRate:'slow',  pokeTypes:['normal']},
+    {name:'dratini',    speed:2.50,hp:3,size:1.29,score:12,color:0x7038F8,growthRate:'medium',pokeTypes:['dragon']},
+    {name:'omanyte',    speed:1.75,hp:2,size:0.30,score:14,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','water']},
+    {name:'kabuto',     speed:2.75,hp:2,size:0.36,score:14,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','water']},
+  ],
+  // Pool 3 — Olas 10-14: Gen 2
+  [
+    {name:'chikorita',  speed:2.25,hp:3,size:0.64,score:13,color:0x78C850,growthRate:'medium',pokeTypes:['grass']},
+    {name:'togepi',     speed:1.00,hp:2,size:0.30,score:10,color:0xEE99AC,growthRate:'medium',pokeTypes:['fairy']},
+    {name:'marill',     speed:2.00,hp:4,size:0.30,score:18,color:0x6890F0,growthRate:'medium',pokeTypes:['water','fairy']},
+    {name:'wooper',     speed:1.00,hp:4,size:0.30,score:10,color:0x6890F0,growthRate:'erratic',pokeTypes:['water','ground']},
+    {name:'slugma',     speed:1.00,hp:3,size:0.50,score:10,color:0xF08030,growthRate:'medium',pokeTypes:['fire']},
+    {name:'larvitar',   speed:2.05,hp:3,size:0.43,score:12,color:0xB8A038,growthRate:'medium',pokeTypes:['rock','ground']},
+    {name:'hoothoot',   speed:2.50,hp:4,size:0.50,score:10,color:0xA890F0,growthRate:'medium',pokeTypes:['normal','flying']},
+    {name:'umbreon',    speed:3.25,hp:6,size:0.71,score:37,color:0x705848,growthRate:'slow',  pokeTypes:['dark']},
+  ],
+  // Pool 4 — Olas 15+: Gen 3-4
+  [
+    {name:'treecko',    speed:3.50,hp:3,size:0.36,score:12,color:0x78C850,growthRate:'medium',pokeTypes:['grass']},
+    {name:'ralts',      speed:2.00,hp:2,size:0.30,score:10,color:0xF85888,growthRate:'medium',pokeTypes:['psychic','fairy']},
+    {name:'aron',       speed:1.50,hp:3,size:0.30,score:13,color:0xB8B8D0,growthRate:'medium',pokeTypes:['steel','rock']},
+    {name:'gulpin',     speed:2.00,hp:4,size:0.30,score:12,color:0xA040A0,growthRate:'medium',pokeTypes:['poison']},
+    {name:'spoink',     speed:3.00,hp:4,size:0.50,score:13,color:0xF85888,growthRate:'medium',pokeTypes:['psychic']},
+    {name:'feebas',     speed:4.00,hp:2,size:0.43,score:10,color:0x6890F0,growthRate:'fast',  pokeTypes:['water']},
+    {name:'buneary',    speed:4.25,hp:4,size:0.30,score:14,color:0xA8A878,growthRate:'fast',  pokeTypes:['normal']},
+    {name:'gible',      speed:2.10,hp:4,size:0.50,score:12,color:0x7038F8,growthRate:'medium',pokeTypes:['dragon','ground']},
+    {name:'rotom',      speed:4.55,hp:3,size:0.30,score:31,color:0xF8D030,growthRate:'fast',  pokeTypes:['electric','ghost']},
+    {name:'whismur',    speed:1.40,hp:4,size:0.43,score:10,color:0xA8A878,growthRate:'erratic',pokeTypes:['normal']},
+  ],
+];
+
+function getWavePool(waveNum) {
+  if (waveNum >= 15) return POKE_WAVE_POOLS[4];
+  if (waveNum >= 10) return POKE_WAVE_POOLS[3];
+  if (waveNum >=  7) return POKE_WAVE_POOLS[2];
+  if (waveNum >=  4) return POKE_WAVE_POOLS[1];
+  return POKE_WAVE_POOLS[0];
+}
+
 // Helper to pick a tier based on rarity
 function pickEnemyTier() {
     const rand = Math.random();
@@ -1824,16 +1909,19 @@ function pickEnemyTier() {
 }
 
 function spawnEnemy(typeIndex) {
-  const baseType = ENEMY_BASE_STATS[typeIndex % ENEMY_BASE_STATS.length];
-  const tier = pickEnemyTier(); // Pick a size tier
+  const pool = getWavePool(wave);
+  const baseType = pool[typeIndex % pool.length];
+  const tier = pickEnemyTier();
 
   const growthMult = POKEMON_GROWTH[baseType.growthRate || 'medium'](wave);
   const type = {
-    speed: Math.min(14, baseType.speed * growthMult * tier.speedMult * 0.8),
-    hp:    Math.ceil(baseType.hp * growthMult * tier.hpMult),
-    size:  baseType.size * tier.sizeMult,
-    score: Math.ceil(baseType.score * growthMult * tier.hpMult),
-    color: baseType.color,
+    speed:     Math.min(14, baseType.speed * growthMult * tier.speedMult * 0.8),
+    hp:        Math.ceil(baseType.hp * growthMult * tier.hpMult),
+    size:      baseType.size * tier.sizeMult,
+    score:     Math.ceil(baseType.score * growthMult * tier.hpMult),
+    color:     baseType.color,
+    pokeTypes: baseType.pokeTypes ?? ['normal'],
+    pokeName:  baseType.name ?? '',
   };
   const angle = Math.random()*Math.PI*2;
 
@@ -1866,6 +1954,7 @@ function spawnEnemy(typeIndex) {
     type, mesh, hbFill,
     hp:type.hp, maxHp:type.hp,
     speed: type.speed,
+    pokeTypes: type.pokeTypes,
     rotSpeed:(Math.random()-.5)*4,
     bobOffset:Math.random()*Math.PI*2,
     slowTimer:0, slowFactor:1,
@@ -2180,7 +2269,8 @@ function updateWaveFlash(delta) {
 function spawnWave(waveNum) {
   drumBpm = 84 + waveNum;
   const count = 5+waveNum*3;
-  const types = Math.min(waveNum, ENEMY_BASE_STATS.length);
+  const pool  = getWavePool(waveNum);
+  const types = Math.min(waveNum, pool.length);
   for (let i=0; i<count; i++) {
     const t = Math.floor(Math.random()*types);
     setTimeout(()=>spawnEnemy(t), i*300);
