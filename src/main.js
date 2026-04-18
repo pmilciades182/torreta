@@ -26,7 +26,7 @@ composer.addPass(new RenderPass(scene, camera));
 
 const enemyOutline = new OutlinePass(new THREE.Vector2(window.innerWidth, window.innerHeight), scene, camera);
 enemyOutline.edgeStrength = 6; enemyOutline.edgeThickness = 2.0; enemyOutline.edgeGlow = 1.2;
-enemyOutline.visibleEdgeColor.set(0xff2200); enemyOutline.hiddenEdgeColor.set(0x880000);
+enemyOutline.visibleEdgeColor.set(0xff2200); enemyOutline.hiddenEdgeColor.set(0x000000);
 composer.addPass(enemyOutline);
 
 const turretOutline = new OutlinePass(new THREE.Vector2(window.innerWidth, window.innerHeight), scene, camera);
