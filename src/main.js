@@ -10,8 +10,8 @@ import areosaurUrl from '../models/Areosaur.1.glb?url';
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a0a2e);
-scene.fog = new THREE.Fog(0x1a0a2e, 40, 160);
+scene.background = new THREE.Color(0x0d0730);
+scene.fog = new THREE.Fog(0x0d0730, 60, 220);
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 const clock  = new THREE.Clock();
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -25,31 +25,56 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 
 const enemyOutline = new OutlinePass(new THREE.Vector2(window.innerWidth, window.innerHeight), scene, camera);
-enemyOutline.edgeStrength = 4; enemyOutline.edgeThickness = 1.5; enemyOutline.edgeGlow = 0.6;
-enemyOutline.visibleEdgeColor.set(0xff3300); enemyOutline.hiddenEdgeColor.set(0x550000);
+enemyOutline.edgeStrength = 6; enemyOutline.edgeThickness = 2.0; enemyOutline.edgeGlow = 1.2;
+enemyOutline.visibleEdgeColor.set(0xff2200); enemyOutline.hiddenEdgeColor.set(0x880000);
 composer.addPass(enemyOutline);
 
 const turretOutline = new OutlinePass(new THREE.Vector2(window.innerWidth, window.innerHeight), scene, camera);
-turretOutline.edgeStrength = 3; turretOutline.edgeThickness = 1.2; turretOutline.edgeGlow = 0.4;
-turretOutline.visibleEdgeColor.set(0x00ffcc); turretOutline.hiddenEdgeColor.set(0x004433);
+turretOutline.edgeStrength = 5; turretOutline.edgeThickness = 1.8; turretOutline.edgeGlow = 0.9;
+turretOutline.visibleEdgeColor.set(0x00ffcc); turretOutline.hiddenEdgeColor.set(0x006655);
 composer.addPass(turretOutline);
 
 const crtPass = new ShaderPass({
   uniforms: { tDiffuse: { value: null }, time: { value: 0 } },
   vertexShader: `varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
   fragmentShader: `
-    uniform sampler2D tDiffuse;uniform float time;varying vec2 vUv;
-    vec2 barrel(vec2 u){vec2 c=u-.5;return u+c*dot(c,c)*.10;}
-    float noise(vec2 u){return fract(sin(dot(u*300.+time*6.1,vec2(127.1,311.7)))*43758.5453);}
-    void main(){
-      vec2 uv=barrel(vUv);
-      if(uv.x<0.||uv.x>1.||uv.y<0.||uv.y>1.){gl_FragColor=vec4(0,0,0,1);return;}
-      float ca=.002;
-      vec3 col=vec3(texture2D(tDiffuse,uv+vec2(ca,0.)).r,texture2D(tDiffuse,uv).g,texture2D(tDiffuse,uv-vec2(ca,0.)).b);
-      col*=1.-.13*pow(sin(uv.y*480.*3.14159),2.);
-      vec2 v=uv*(1.-uv);col*=pow(v.x*v.y*16.,.30);
-      col+=(noise(uv)-.5)*.030;col*=.972+.028*sin(time*22.);
-      gl_FragColor=vec4(col,1.);}`,
+    uniform sampler2D tDiffuse; uniform float time; varying vec2 vUv;
+
+    vec3 toonSaturate(vec3 c, float s) {
+      float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      return mix(vec3(lum), c, s);
+    }
+
+    void main() {
+      vec3 col = texture2D(tDiffuse, vUv).rgb;
+
+      // Saturation boost — colores vivos tipo toon
+      col = toonSaturate(col, 2.0);
+
+      // Posterize suave (8 pasos) — cel-shading look
+      float steps = 8.0;
+      col = floor(col * steps + 0.5) / steps;
+
+      // Contrast S-curve (smoothstep)
+      col = col * col * (3.0 - 2.0 * col);
+
+      // Brightness
+      col *= 1.18;
+
+      // Color grade: sombras frias azuladas, luces cálidas doradas (Zelda)
+      float lum = dot(col, vec3(0.299, 0.587, 0.114));
+      vec3 shadow = vec3(0.82, 0.88, 1.15);
+      vec3 highlight = vec3(1.10, 1.05, 0.85);
+      col *= mix(shadow, highlight, smoothstep(0.0, 0.8, lum));
+
+      col = clamp(col, 0.0, 1.0);
+
+      // Viñeta suave
+      vec2 v = vUv * (1.0 - vUv);
+      col *= pow(v.x * v.y * 16.0, 0.10);
+
+      gl_FragColor = vec4(col, 1.0);
+    }`,
 });
 composer.addPass(crtPass);
 
@@ -737,12 +762,14 @@ const shopEl       = document.getElementById('shop');
 const stateFlash   = document.getElementById('state-flash');
 
 // ─── Lights ───────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0x220044, 0.6));
-const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+scene.add(new THREE.AmbientLight(0x6644cc, 1.4));
+// Hemisphere: cielo azul-violeta arriba, suelo cálido abajo
+scene.add(new THREE.HemisphereLight(0x4466ff, 0xffaa44, 0.9));
+const dirLight = new THREE.DirectionalLight(0xfff0cc, 2.2);
 dirLight.position.set(5, 20, 10); dirLight.castShadow = true;
 dirLight.shadow.mapSize.width = dirLight.shadow.mapSize.height = 2048;
 scene.add(dirLight);
-const purpleLight = new THREE.PointLight(0x8800ff, 1.5, 30);
+const purpleLight = new THREE.PointLight(0xaa44ff, 2.5, 40);
 purpleLight.position.set(0, 5, 0); scene.add(purpleLight);
 
 // ─── Lightning System ─────────────────────────────────────────────────────────
@@ -1044,12 +1071,12 @@ floorGeo.computeVertexNormals();
 
 const floor = new THREE.Mesh(
   floorGeo,
-  new THREE.MeshStandardMaterial({ color: 0x0d0d2b, roughness: 0.9 })
+  new THREE.MeshStandardMaterial({ color: 0x1a0d4a, roughness: 0.85, metalness: 0.1 })
 );
 floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
 
 // Grid solo en zona central plana
-const gridHelper = new THREE.GridHelper(28, 14, 0x330066, 0x220044);
+const gridHelper = new THREE.GridHelper(28, 14, 0x8844ff, 0x4422aa);
 gridHelper.position.y = .02; scene.add(gridHelper);
 
 // Anillo de spawn en radio 60, elevado según el terreno
@@ -1587,31 +1614,117 @@ function spawnMuzzleFlash(pos, color=0xffffaa) {
   particles.push({mesh:f,type:'flash'}); scene.add(f);
 }
 
+// ── Shared explosion geometries — created once, reused every explosion ─────
+const _EXP_GEO_SPHERE = new THREE.SphereGeometry(1, 7, 6);
+const _EXP_GEO_FB     = new THREE.SphereGeometry(1, 8, 7);
+const _EXP_GEO_RING   = new THREE.TorusGeometry(1, 0.30, 6, 20);
+const _EXP_GEO_SMOKE  = new THREE.SphereGeometry(1, 6, 5);
+const _EXP_GEO_DEBRIS = new THREE.BoxGeometry(1, 1, 1);
+const _EXP_MAX_CONCURRENT = 3; // drop new explosions beyond this
+
 function spawnHitParticles(pos, color=0xff4400) {
-  for (let i=0; i<30; i++) { // Increased particle count
-    const p = new THREE.Mesh(
-      new THREE.BoxGeometry(.2, .2, .2), // Changed to BoxGeometry and increased size
-      new THREE.MeshBasicMaterial({color,transparent:true,opacity:1})
-    );
-    p.position.copy(pos);
-    const sp = 8+Math.random()*12; // Increased initial speed
-    p.velocity = new THREE.Vector3((Math.random()-.5)*sp, Math.random()*sp, (Math.random()-.5)*sp);
-    p.life=1.0+Math.random()*.5; p.maxLife=p.life; // Increased lifetime
-    particles.push({mesh:p,type:'hit'}); scene.add(p);
+  // 8 hit sparks as a single Points object (1 draw call)
+  const n = 8;
+  const pArr = new Float32Array(n*3);
+  const vArr = new Float32Array(n*3);
+  for (let i=0; i<n; i++) {
+    pArr[i*3]=pos.x; pArr[i*3+1]=pos.y; pArr[i*3+2]=pos.z;
+    const sp=10+Math.random()*14;
+    vArr[i*3]=(Math.random()-.5)*sp; vArr[i*3+1]=Math.random()*sp*0.8; vArr[i*3+2]=(Math.random()-.5)*sp;
   }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pArr,3));
+  const pts = new THREE.Points(geo,
+    new THREE.PointsMaterial({color, size:0.35, sizeAttenuation:true,
+      transparent:true, opacity:1, blending:THREE.AdditiveBlending, depthWrite:false})
+  );
+  pts.velocities=vArr; pts.life=0.6; pts.maxLife=0.6;
+  particles.push({mesh:pts, type:'expSparks'}); scene.add(pts);
 }
 
-function spawnExplosion(pos) {
-  // Expanding ring
-  const ring = new THREE.Mesh(
-    new THREE.SphereGeometry(.8, 8, 8), // Increased size
-    new THREE.MeshBasicMaterial({ color:0xff8800, transparent:true, opacity:.9, wireframe:true })
+function spawnExplosion(pos, scale=1.0) {
+  // Hard cap — skip if too many active to protect FPS
+  if (particles.filter(p=>p.isExplosion).length >= _EXP_MAX_CONCURRENT) return;
+  const s = scale;
+
+  const addMat = (color, opacity=1) => new THREE.MeshBasicMaterial(
+    {color, transparent:true, opacity, depthWrite:false, blending:THREE.AdditiveBlending}
   );
-  ring.position.copy(pos); ring.life=0.8; ring.maxLife=0.8; // Increased lifetime
-  particles.push({mesh:ring, type:'explosion'}); scene.add(ring);
-  // Debris
-  spawnHitParticles(pos, 0xff6600);
-  spawnHitParticles(pos, 0xffaa00);
+
+  // 1. Flash central
+  const flash = new THREE.Mesh(_EXP_GEO_SPHERE, addMat(0xffffff));
+  flash.position.copy(pos); flash.scale.setScalar(3.5*s);
+  flash.life=0.09; flash.maxLife=0.09; flash.baseScale=3.5*s;
+  particles.push({mesh:flash, type:'expFlash', isExplosion:true}); scene.add(flash);
+
+  // 2. Fireball naranja
+  const fb1 = new THREE.Mesh(_EXP_GEO_FB, addMat(0xff5500, 0.92));
+  fb1.position.copy(pos); fb1.scale.setScalar(2.0*s);
+  fb1.life=0.55; fb1.maxLife=0.55; fb1.baseScale=2.0*s;
+  particles.push({mesh:fb1, type:'expFireball', isExplosion:true}); scene.add(fb1);
+
+  // 3. Fireball amarillo
+  const fb2 = new THREE.Mesh(_EXP_GEO_FB, addMat(0xffdd00, 0.88));
+  fb2.position.copy(pos); fb2.scale.setScalar(1.2*s);
+  fb2.life=0.35; fb2.maxLife=0.35; fb2.baseScale=1.2*s;
+  particles.push({mesh:fb2, type:'expFireball', isExplosion:true}); scene.add(fb2);
+
+  // 4. Shockwave ring
+  const ring = new THREE.Mesh(_EXP_GEO_RING, addMat(0xffaa44, 0.80));
+  ring.position.copy(pos); ring.rotation.x=Math.PI/2; ring.scale.setScalar(s);
+  ring.life=0.40; ring.maxLife=0.40; ring.baseScale=s;
+  particles.push({mesh:ring, type:'expRing', isExplosion:true}); scene.add(ring);
+
+  // 5. Humo
+  const smoke = new THREE.Mesh(_EXP_GEO_SMOKE,
+    new THREE.MeshBasicMaterial({color:0x442211, transparent:true, opacity:0.68, depthWrite:false})
+  );
+  smoke.position.copy(pos); smoke.scale.setScalar(2.2*s);
+  smoke.life=1.6; smoke.maxLife=1.6; smoke.baseScale=2.2*s;
+  particles.push({mesh:smoke, type:'expSmoke', isExplosion:true}); scene.add(smoke);
+
+  // 6. Chispas — un solo Points (1 draw call)
+  const sparkN = Math.min(Math.floor(14*s+6), 18);
+  const spPos = new Float32Array(sparkN*3);
+  const spVel = new Float32Array(sparkN*3);
+  for (let i=0; i<sparkN; i++) {
+    spPos[i*3]=pos.x; spPos[i*3+1]=pos.y; spPos[i*3+2]=pos.z;
+    const spd=(14+Math.random()*18)*s;
+    spVel[i*3]=(Math.random()-.5)*spd;
+    spVel[i*3+1]=(Math.random()*0.6+0.3)*spd;
+    spVel[i*3+2]=(Math.random()-.5)*spd;
+  }
+  const spGeo = new THREE.BufferGeometry();
+  spGeo.setAttribute('position', new THREE.BufferAttribute(spPos,3));
+  const sparks = new THREE.Points(spGeo,
+    new THREE.PointsMaterial({color:0xffaa22, size:0.5*s, sizeAttenuation:true,
+      transparent:true, opacity:1, blending:THREE.AdditiveBlending, depthWrite:false})
+  );
+  sparks.velocities=spVel; sparks.life=1.2; sparks.maxLife=1.2;
+  particles.push({mesh:sparks, type:'expSparks', isExplosion:true}); scene.add(sparks);
+
+  // 7. Debris — geometría compartida, escala por instancia
+  const debN = Math.min(Math.floor(3*s+2), 5);
+  for (let i=0; i<debN; i++) {
+    const sz=(0.3+Math.random()*0.4)*s;
+    const deb = new THREE.Mesh(_EXP_GEO_DEBRIS,
+      new THREE.MeshBasicMaterial({color:0x331100, transparent:true, opacity:1})
+    );
+    deb.position.copy(pos); deb.scale.setScalar(sz);
+    const spd=(7+Math.random()*10)*s;
+    deb.velocity=new THREE.Vector3((Math.random()-.5)*spd,(Math.random()*0.5+0.1)*spd,(Math.random()-.5)*spd);
+    deb.rotVel=new THREE.Vector3(Math.random()*10-5,Math.random()*10-5,Math.random()*10-5);
+    deb.life=1.1+Math.random()*0.6; deb.maxLife=deb.life;
+    particles.push({mesh:deb, type:'expDebris', isExplosion:true}); scene.add(deb);
+  }
+
+  // 8. Luz puntual
+  const lHost = new THREE.Object3D();
+  lHost.position.copy(pos);
+  lHost.add(new THREE.PointLight(0xff8800, 10*s, 35*s));
+  lHost.initIntensity=10*s; lHost.life=0.5; lHost.maxLife=0.5;
+  scene.add(lHost);
+  particles.push({mesh:lHost, type:'expLight', isExplosion:true});
 }
 
 // ─── Bullet Hit Effects ───────────────────────────────────────────────────────
@@ -1648,15 +1761,24 @@ function refreshHealthBar(enemy) {
   enemy.userData.hbFill.position.x = -(1-r)*enemy.userData.type.size;
 }
 
+// ─── Toon gradient (3 bandas de iluminación tipo cel-shading) ─────────────────
+const _toonGrad = (() => {
+  const data = new Uint8Array([60, 140, 220]);
+  const tex  = new THREE.DataTexture(data, 3, 1, THREE.RedFormat);
+  tex.minFilter = tex.magFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+})();
+
 // ─── Enemies ──────────────────────────────────────────────────────────────────
 const ENEMY_BASE_STATS = [
-  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200 }, // Original Type 0 (Red)
-  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600 }, // Original Type 1 (Orange)
-  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff }, // Original Type 2 (Purple)
-  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077 }, // Original Type 3 (Pink)
-  { speed:4.0, hp:1, size:.6,  score:15, color:0x00ff00 }, // New Type 4 (Green)
-  { speed:2.5, hp:4, size:.9,  score:30, color:0x0000ff }, // New Type 5 (Blue)
-  { speed:3.0, hp:2, size:.7,  score:20, color:0xffff00 }, // New Type 6 (Yellow)
+  { speed:3.5, hp:1, size:.5,  score:10, color:0xff2200, growthRate:'fast'    }, // Rojo: glass cannon
+  { speed:2.0, hp:3, size:.8,  score:25, color:0xff6600, growthRate:'medium'  }, // Naranja: equilibrado
+  { speed:5.0, hp:1, size:.35, score:20, color:0xcc00ff, growthRate:'fast'    }, // Morado: velocista
+  { speed:1.2, hp:6, size:1.1, score:50, color:0xff0077, growthRate:'slow'    }, // Rosa: tanque
+  { speed:4.0, hp:1, size:.6,  score:15, color:0x00ff00, growthRate:'erratic' }, // Verde: surge (débil→explosivo)
+  { speed:2.5, hp:4, size:.9,  score:30, color:0x0000ff, growthRate:'medium'  }, // Azul: generalista
+  { speed:3.0, hp:2, size:.7,  score:20, color:0xffff00, growthRate:'slow'    }, // Amarillo: slow-build
 ];
 
 const ENEMY_GEOMETRIES = [
@@ -1670,10 +1792,24 @@ const ENEMY_GEOMETRIES = [
 ];
 
 const ENEMY_SIZE_TIERS = [
-    { sizeMult: 1.0, speedMult: 1.0, hpMult: 1.0, rarity: 0.5 }, // Small (50% chance)
-    { sizeMult: 2.0, speedMult: 0.8, hpMult: 2.0, rarity: 0.4 }, // Medium (40% chance)
-    { sizeMult: 4.0, speedMult: 0.6, hpMult: 4.0, rarity: 0.1 }, // Large (10% chance)
+    { sizeMult: 1.0, speedMult: 1.0, hpMult: 1.0, rarity: 0.5 },
+    { sizeMult: 2.0, speedMult: 0.8, hpMult: 2.0, rarity: 0.4 },
+    { sizeMult: 4.0, speedMult: 0.6, hpMult: 4.0, rarity: 0.1 },
 ];
+
+// ─── Pokemon Growth Rate Curves ───────────────────────────────────────────────
+// Basado en las fórmulas de PokeAPI /growth-rate.
+// Cada curva refleja cómo distintos Pokemon escalan de nivel:
+//   fast    → 4L³/5  : se vuelven peligrosos rápido
+//   medium  → L³     : progresión balanceada estándar
+//   slow    → 5L³/4  : curva suave, techo alto en olas tardías
+//   erratic → tramos : débil hasta ola 4, luego pico repentino
+const POKEMON_GROWTH = {
+  fast:    w => 1 + w * 0.28 + w * w * 0.010,
+  medium:  w => 1 + w * 0.16 + w * w * 0.005,
+  slow:    w => 1 + w * 0.09 + w * w * 0.002,
+  erratic: w => w < 5 ? 1 + w * 0.05 : 1 + (w - 4) * 0.38,
+};
 // Helper to pick a tier based on rarity
 function pickEnemyTier() {
     const rand = Math.random();
@@ -1691,12 +1827,13 @@ function spawnEnemy(typeIndex) {
   const baseType = ENEMY_BASE_STATS[typeIndex % ENEMY_BASE_STATS.length];
   const tier = pickEnemyTier(); // Pick a size tier
 
-  const type = { // Create a new type object with applied multipliers
-      speed: baseType.speed * tier.speedMult * (1 - 0.2), // Apply overall 20% slow
-      hp: baseType.hp * tier.hpMult,
-      size: baseType.size * tier.sizeMult,
-      score: baseType.score * tier.hpMult, // Scale score with HP for larger enemies
-      color: baseType.color
+  const growthMult = POKEMON_GROWTH[baseType.growthRate || 'medium'](wave);
+  const type = {
+    speed: Math.min(14, baseType.speed * growthMult * tier.speedMult * 0.8),
+    hp:    Math.ceil(baseType.hp * growthMult * tier.hpMult),
+    size:  baseType.size * tier.sizeMult,
+    score: Math.ceil(baseType.score * growthMult * tier.hpMult),
+    color: baseType.color,
   };
   const angle = Math.random()*Math.PI*2;
 
@@ -1712,7 +1849,7 @@ function spawnEnemy(typeIndex) {
   const geometryFn = ENEMY_GEOMETRIES[Math.floor(Math.random() * ENEMY_GEOMETRIES.length)];
   const mesh = new THREE.Mesh(
     geometryFn(type.size),
-    new THREE.MeshStandardMaterial({color:type.color, emissive:type.color, emissiveIntensity:.4, metalness:.3})
+    new THREE.MeshToonMaterial({color:type.color, emissive:type.color, emissiveIntensity:.25, gradientMap:_toonGrad})
   );
   mesh.castShadow=true; group.add(mesh);
 
@@ -1728,7 +1865,7 @@ function spawnEnemy(typeIndex) {
   group.userData = {
     type, mesh, hbFill,
     hp:type.hp, maxHp:type.hp,
-    speed: type.speed + wave*.15,
+    speed: type.speed,
     rotSpeed:(Math.random()-.5)*4,
     bobOffset:Math.random()*Math.PI*2,
     slowTimer:0, slowFactor:1,
@@ -1741,6 +1878,72 @@ function spawnEnemy(typeIndex) {
 }
 
 // ─── Areosaur (volador) ───────────────────────────────────────────────────────
+// Geometría compartida para partículas de propulsión
+const _thrusterGeo = new THREE.SphereGeometry(1, 5, 4);
+
+// ── Sonido de motor: drone grave sierra constante espacializado ───────────────
+function startAreosaurEngine(x, y, z) {
+  const ctx = Howler.ctx;
+  if (!ctx || ctx.state === 'suspended') return null;
+  const { masterGain } = ensureMasterChain(ctx);
+
+  const panner = ctx.createPanner();
+  panner.panningModel  = 'HRTF';
+  panner.distanceModel = 'inverse';
+  panner.refDistance   = 12;
+  panner.maxDistance   = 280;
+  panner.rolloffFactor = 1.2;
+  panner.setPosition(x, y, z);
+  panner.connect(masterGain);
+
+  const baseFreq = 58 + Math.random() * 18;
+
+  // Tres osciladores desafinados para grosor "sierra"
+  const osc1 = ctx.createOscillator(); osc1.type = 'sawtooth';
+  osc1.frequency.value = baseFreq;
+  const osc2 = ctx.createOscillator(); osc2.type = 'sawtooth';
+  osc2.frequency.value = baseFreq * 1.015;
+  const osc3 = ctx.createOscillator(); osc3.type = 'square';
+  osc3.frequency.value = baseFreq * 2.97;  // 3er armónico ligeramente detuneado
+
+  // LFO — modulación de frecuencia lenta para efecto de motor vivo
+  const lfo = ctx.createOscillator(); lfo.type = 'sine';
+  lfo.frequency.value = 3.5 + Math.random() * 2;
+  const lfoG = ctx.createGain(); lfoG.gain.value = 5;
+  lfo.connect(lfoG); lfoG.connect(osc1.frequency); lfoG.connect(osc2.frequency);
+
+  // Filtros: LPF oscuro + BPF resonante en graves
+  const lpf = ctx.createBiquadFilter();
+  lpf.type = 'lowpass'; lpf.frequency.value = 420; lpf.Q.value = 1.2;
+  const bpf = ctx.createBiquadFilter();
+  bpf.type = 'bandpass'; bpf.frequency.value = 110; bpf.Q.value = 3;
+
+  const g1 = ctx.createGain(); g1.gain.value = 0.55;
+  const g2 = ctx.createGain(); g2.gain.value = 0.40;
+  const g3 = ctx.createGain(); g3.gain.value = 0.18;
+  const gMix = ctx.createGain(); gMix.gain.value = 0.22;
+
+  osc1.connect(g1); g1.connect(lpf);
+  osc2.connect(g2); g2.connect(lpf);
+  osc3.connect(g3); g3.connect(bpf);
+  lpf.connect(gMix); bpf.connect(gMix);
+  gMix.connect(panner);
+
+  osc1.start(); osc2.start(); osc3.start(); lfo.start();
+  return { osc1, osc2, osc3, lfo, panner };
+}
+
+function stopAreosaurEngine(eng) {
+  if (!eng) return;
+  try { eng.osc1.stop(); eng.osc2.stop(); eng.osc3.stop(); eng.lfo.stop(); } catch(_) {}
+  eng.panner.disconnect();
+}
+
+function updateAreosaurEnginePos(eng, pos) {
+  if (!eng?.panner) return;
+  eng.panner.setPosition(pos.x, pos.y, pos.z);
+}
+
 let _areosaurModel = null;
 const _gltfLoader  = new GLTFLoader();
 _gltfLoader.load(areosaurUrl, (gltf) => {
@@ -1887,62 +2090,21 @@ function spawnAreosaur() {
   engineLight.position.set(0, 0, 1.5);
   group.add(engineLight);
 
-  // Barra de vida naranja
-  const hbBg = new THREE.Mesh(
-    new THREE.PlaneGeometry(size * 2, 0.22),
-    new THREE.MeshBasicMaterial({ color: 0x440000, side: THREE.DoubleSide })
-  );
-  hbBg.position.y = size + 0.6;
-  group.add(hbBg);
-
+  // Barra de vida oculta para aviones (objeto dummy, no se añade a la escena)
   const hbFill = new THREE.Mesh(
     new THREE.PlaneGeometry(size * 2, 0.22),
     new THREE.MeshBasicMaterial({ color: 0xff8800, side: THREE.DoubleSide })
   );
-  hbFill.position.y = size + 0.6; hbFill.position.z = 0.01;
-  group.add(hbFill);
 
-  // ── Trazado de ruta visible ────────────────────────────────────────────────
-  // Línea aérea punteada en altura de vuelo (dashes que avanzan)
-  const pathPts = [
-    new THREE.Vector3(sx, altitude, sz),
-    new THREE.Vector3(tx, altitude, tz),
-  ];
-  const pathLine = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(pathPts),
-    new THREE.LineDashedMaterial({
-      color: 0xff6600,
-      dashSize: 10, gapSize: 6,
-      transparent: true, opacity: 0.60,
-      depthWrite: false, blending: THREE.AdditiveBlending,
-    })
-  );
-  pathLine.computeLineDistances();
-  scene.add(pathLine);
-
-  // Sombra de ruta en el suelo (proyección a y≈0.3, muy tenue)
-  const groundPts = [
-    new THREE.Vector3(sx, 0.3, sz),
-    new THREE.Vector3(tx, 0.3, tz),
-  ];
-  const groundLine = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(groundPts),
-    new THREE.LineDashedMaterial({
-      color: 0xff3300,
-      dashSize: 14, gapSize: 10,
-      transparent: true, opacity: 0.22,
-      depthWrite: false,
-    })
-  );
-  groundLine.computeLineDistances();
-  scene.add(groundLine);
+  // Motor: sonido grave sierra constante espacializado
+  const engineSound = startAreosaurEngine(sx, altitude, sz);
 
   group.userData = {
     type:        { speed, hp, size, score: 150 + wave * 10, color: 0xff8800 },
     mesh:        modelMesh,
     hbFill,
     engineLight,
-    pathLine, groundLine,
+    engineSound,
     hp, maxHp:   hp,
     speed,
     flyDir,
@@ -2038,9 +2200,9 @@ function spawnWave(waveNum) {
 
 // ─── Collision Detection ──────────────────────────────────────────────────────
 function killEnemy(enemy, idx) {
-  if (enemy.userData.isFlyer) _cleanFlyerPath(enemy);
+  if (enemy.userData.isFlyer && enemy.userData.engineSound) stopAreosaurEngine(enemy.userData.engineSound);
   playExplosionSound(enemy.position.clone());
-  spawnHitParticles(enemy.position.clone(), 0xffff00);
+  spawnExplosion(enemy.position.clone(), enemy.userData.isFlyer ? 2.0 : 1.0);
   scene.remove(enemy); enemies.splice(idx, 1);
   const oi = enemyOutline.selectedObjects.indexOf(enemy);
   if (oi!==-1) enemyOutline.selectedObjects.splice(oi,1);
@@ -2053,7 +2215,7 @@ function killEnemy(enemy, idx) {
 }
 
 function removeEnemy(enemy, idx) {
-  if (enemy.userData.isFlyer) _cleanFlyerPath(enemy);
+  if (enemy.userData.isFlyer && enemy.userData.engineSound) stopAreosaurEngine(enemy.userData.engineSound);
   scene.remove(enemy); enemies.splice(idx,1);
   const oi = enemyOutline.selectedObjects.indexOf(enemy);
   if (oi!==-1) enemyOutline.selectedObjects.splice(oi,1);
@@ -2241,13 +2403,66 @@ function animate() {
     const p=particles[i];
     p.mesh.life-=delta;
     const r=p.mesh.life/p.mesh.maxLife;
-    p.mesh.material.opacity=r;
+
     if(p.type==='hit'){
+      p.mesh.material.opacity=r;
       p.mesh.position.addScaledVector(p.mesh.velocity,delta);
       p.mesh.velocity.y-=12*delta;
+    } else if(p.type==='explosion'){
+      p.mesh.material.opacity=r;
+      p.mesh.scale.setScalar(1+(1-r)*8);
+    } else if(p.type==='thruster'){
+      p.mesh.position.addScaledVector(p.mesh.velocity,delta);
+      p.mesh.scale.setScalar(r * p.mesh.maxLife * 3.5);
+      p.mesh.material.opacity = r * 0.9;
+    } else if(p.type==='expFlash'){
+      p.mesh.scale.setScalar(p.mesh.baseScale * (1+(1-r)*3));
+      p.mesh.material.opacity = r * r;
+    } else if(p.type==='expFireball'){
+      p.mesh.scale.setScalar(p.mesh.baseScale * (1+(1-r)*10));
+      p.mesh.material.opacity = Math.pow(r, 0.5) * 0.85;
+    } else if(p.type==='expRing'){
+      p.mesh.scale.setScalar(p.mesh.baseScale * (1+(1-r)*15));
+      p.mesh.material.opacity = r * 0.75;
+    } else if(p.type==='expSmoke'){
+      p.mesh.scale.setScalar(p.mesh.baseScale * (1+(1-r)*5));
+      p.mesh.position.y += 1.5*delta;
+      p.mesh.material.opacity = Math.pow(r, 0.4) * 0.55;
+    } else if(p.type==='expSparks'){
+      // Points — update buffer positions with gravity
+      const pa = p.mesh.geometry.attributes.position.array;
+      const va = p.mesh.velocities;
+      for(let j=0, n=va.length/3; j<n; j++){
+        va[j*3+1] -= 14*delta;
+        pa[j*3]   += va[j*3]   * delta;
+        pa[j*3+1] += va[j*3+1] * delta;
+        pa[j*3+2] += va[j*3+2] * delta;
+      }
+      p.mesh.geometry.attributes.position.needsUpdate = true;
+      p.mesh.material.opacity = r;
+    } else if(p.type==='expDebris'){
+      p.mesh.position.addScaledVector(p.mesh.velocity, delta);
+      p.mesh.velocity.y -= 9*delta;
+      p.mesh.rotation.x += p.mesh.rotVel.x*delta;
+      p.mesh.rotation.y += p.mesh.rotVel.y*delta;
+      p.mesh.rotation.z += p.mesh.rotVel.z*delta;
+      p.mesh.material.opacity = r * 0.8;
+    } else if(p.type==='expLight'){
+      const light = p.mesh.children[0];
+      if(light) light.intensity = p.mesh.initIntensity * r * r;
     }
-    if(p.type==='explosion') p.mesh.scale.setScalar(1+(1-r)*8);
-    if(p.mesh.life<=0){scene.remove(p.mesh);particles.splice(i,1);}
+
+    if(p.mesh.life<=0){
+      if(p.type==='thruster' || p.type==='expSparks' ||
+         p.type==='expFlash' || p.type==='expFireball' ||
+         p.type==='expRing'  || p.type==='expSmoke'    ||
+         p.type==='expDebris'){
+        p.mesh.material.dispose();
+      }
+      if(p.type==='expSparks') p.mesh.geometry.dispose();
+      scene.remove(p.mesh);
+      particles.splice(i,1);
+    }
   }
 
   // Starfield Parallax
@@ -2266,6 +2481,12 @@ function animate() {
 
   // Enemies
   camera.getWorldPosition(_camWP);
+  // Listener 3D para motores espacializados
+  const _al = Howler.ctx?.listener;
+  if (_al) {
+    if (_al.positionX) { _al.positionX.value=_camWP.x; _al.positionY.value=_camWP.y; _al.positionZ.value=_camWP.z; }
+    else _al.setPosition(_camWP.x, _camWP.y, _camWP.z);
+  }
   for (let ei=enemies.length-1; ei>=0; ei--) {
     const e=enemies[ei]; const d=e.userData;
 
@@ -2300,13 +2521,38 @@ function animate() {
         d.bombCooldown = 0.9 + Math.random() * 1.0;
       }
 
-      // Animar dashes hacia adelante
-      if (d.pathLine)   d.pathLine.material.dashOffset   -= d.speed * delta * 0.04;
-      if (d.groundLine) d.groundLine.material.dashOffset -= d.speed * delta * 0.03;
+      // Actualizar posición del sonido de motor
+      if (d.engineSound) updateAreosaurEnginePos(d.engineSound, e.position);
+
+      // Partículas de propulsión — chorros desde la cola del avión
+      const exhaustPos = e.position.clone().addScaledVector(d.flyDir, -7);
+      const pCount = Math.random() > 0.4 ? 3 : 2;
+      for (let p = 0; p < pCount; p++) {
+        const sz2  = 0.5 + Math.random() * 0.9;
+        const mesh = new THREE.Mesh(
+          _thrusterGeo,
+          new THREE.MeshBasicMaterial({
+            color: new THREE.Color().setHSL(0.58 + Math.random() * 0.12, 1.0, 0.65 + Math.random() * 0.25),
+            transparent: true, opacity: 1,
+            depthWrite: false, blending: THREE.AdditiveBlending,
+          })
+        );
+        mesh.scale.setScalar(sz2);
+        mesh.position.copy(exhaustPos).addScaledVector(
+          new THREE.Vector3((Math.random()-.5), (Math.random()-.5)*0.4, (Math.random()-.5)), 1.5
+        );
+        const spd = 10 + Math.random() * 8;
+        mesh.velocity = d.flyDir.clone().negate().multiplyScalar(spd)
+          .add(new THREE.Vector3((Math.random()-.5)*3, (Math.random()-.5)*1.5, (Math.random()-.5)*3));
+        mesh.life = 0.25 + Math.random() * 0.25;
+        mesh.maxLife = mesh.life;
+        scene.add(mesh);
+        particles.push({ mesh, type: 'thruster' });
+      }
 
       // Llegó al destino — sale del mapa sin puntos
       if (e.position.distanceTo(d.flyTarget) < 10) {
-        _cleanFlyerPath(e);
+        if (d.engineSound) stopAreosaurEngine(d.engineSound);
         removeEnemy(e, ei); continue;
       }
 
